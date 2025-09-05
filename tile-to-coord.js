@@ -9,6 +9,6 @@ function tileToLngLat(tileX, tileY, tilesPerSide = 2048) {
 }
 
 
-let coord = tileToLngLat(685, 668);
-console.log(coord);
+let argv = Bun.argv.slice(2);
+let coord = tileToLngLat(argv[0], argv[1]);
 console.log(`https://wplace.live/?lat=${coord[1]}&lng=${coord[0]}&zoom=15`);

@@ -286,6 +286,11 @@ fn main() -> anyhow::Result<()> {
             println!("Processing {} files...", collected.len());
             let progress = Progress::new(collected.len() as u64)?;
 
+            // For some unknown reason, when I use ThreadLocal or even manual unsafe per-thread
+            // object indexing (code commented out below), the performance gets even worse A LOT compared
+            // to the origin
+            // version (allocating memory every time on `diff_png` called). Don't know why.
+
             // let mut buffers = vec![Buffers::default(); rayon::current_num_threads()];
             // let buffers_ptr = SharedBuffer(buffers.as_mut_ptr());
 
