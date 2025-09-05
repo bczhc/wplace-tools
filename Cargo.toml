@@ -15,5 +15,9 @@ pathdiff = "0.2.3"
 png = "0.18.0"
 
 [[bin]]
-name = "incbak"
-path = "src/archive.rs"
+name = "archive-tool"
+path = "src/archive_tool.rs"
+
+[[bin]]
+name = "find-full-color-chunks"
+path = "src/playground/find_full_color_chunks.rs"
