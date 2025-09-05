@@ -1,0 +1,19 @@
+[package]
+name = "wplace-tools"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.99"
+clap = { version = "4.5.47", features = ["derive"] }
+flate2 = "1.1.2"
+once_cell = "1.21.3"
+rayon = "1.11.0"
+walkdir = "2.5.0"
+indicatif = "0.18.0"
+pathdiff = "0.2.3"
+png = "0.18.0"
+
+[[bin]]
+name = "incbak"
+path = "src/archive.rs"
