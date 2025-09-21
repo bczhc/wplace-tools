@@ -144,20 +144,23 @@ pub fn collect_chunks(
 }
 
 /// Map indices in an indexed PNG -> indices in the global [PALETTE]
-pub struct PixelMapper {
+pub struct PixelMapper<
+    // Use fixed array here to eliminate heap allocations
+    const MAX_COLORS: usize = 64,
+> {
     /// Raw palette format: \[r0, g0, b0, r1, g1, b1, ...\]<br/>
     /// Grouped png_palette format: \[\[r0, g0, b0\], \[r1, g1, b1\], ...\]
-    png_palette: Vec<[u8; 3]>,
+    png_palette: [[u8; 3]; MAX_COLORS],
     /// See: https://www.w3.org/TR/PNG-DataRep.html#DR.Alpha-channel
-    trns: Vec<u8>,
+    trns: [u8; MAX_COLORS],
     palette_lookup_table: &'static [u8],
 }
 
 impl PixelMapper {
     fn new(png_info: &Info) -> PixelMapper {
-        let raw_palette = png_info.palette.as_ref().expect("No palette").to_vec();
+        let raw_palette = png_info.palette.as_ref().expect("No palette");
         assert_eq!(raw_palette.len() % 3, 0);
-        let palette_size = raw_palette.len() / 3;
+        let color_count = raw_palette.len() / 3;
         // group by three
         let png_palette = raw_palette
             .chunks(3)
@@ -168,9 +171,15 @@ impl PixelMapper {
                 <[u8; 3]>::try_from(x).unwrap()
             })
             .collect::<Vec<_>>();
-        assert_eq!(png_palette.len(), palette_size);
+        assert_eq!(png_palette.len(), color_count);
 
-        let mut expanded_trns = vec![0_u8; png_palette.len()];
+        let mut png_palette = [Default::default(); 64];
+        let mut groups = raw_palette.chunks(3);
+        for x in png_palette.iter_mut().take(color_count) {
+            *x = groups.next().unwrap().try_into().unwrap();
+        }
+
+        let mut expanded_trns = [0_u8; 64];
         match png_info.trns.as_ref() {
             None => {
                 // all colors in the raw palette are fully opaque
@@ -179,7 +188,7 @@ impl PixelMapper {
             Some(trns) => {
                 // If trns are not as long as raw_palette, expand it. The missing trns positions
                 // should all indicate a full opaque.
-                expanded_trns.write_all(trns).unwrap();
+                (&mut expanded_trns[..]).write_all(trns).unwrap();
                 expanded_trns[trns.len()..].fill(255);
             }
         };
@@ -296,28 +305,14 @@ pub fn write_png(path: impl AsRef<Path>, buf: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub struct Progress {
-    pb: ProgressBar,
-}
-
-impl Progress {
-    pub fn new(len: u64) -> anyhow::Result<Self> {
-        let pb = ProgressBar::new(len);
-        pb.set_style(
-            ProgressStyle::with_template("[{elapsed_precise}] {wide_bar} {pos:>}/{len:7} {eta}")?
-                .progress_chars(">>-"),
-        );
-        Ok(Self { pb })
-    }
-
-    pub fn finish(&self) {
-        self.pb.finish();
-    }
-
-    #[inline(always)]
-    pub fn inc(&self, delta: u64) {
-        self.pb.inc(1);
-    }
+pub fn stylized_progress_bar(len: u64) -> ProgressBar {
+    let pb = ProgressBar::new(len);
+    pb.set_style(
+        ProgressStyle::with_template("[{elapsed_precise}] {wide_bar} {pos:>}/{len:7} {eta}")
+            .unwrap()
+            .progress_chars(">>-"),
+    );
+    pb
 }
 
 #[derive(Copy, Clone)]

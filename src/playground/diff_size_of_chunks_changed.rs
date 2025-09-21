@@ -3,7 +3,7 @@ use rayon::prelude::*;
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use wplace_tools::{CHUNK_LENGTH, Progress, collect_chunks, read_png};
+use wplace_tools::{CHUNK_LENGTH, collect_chunks, read_png, stylized_progress_bar};
 
 fn main() -> anyhow::Result<()> {
     // let range = TilesRange::parse_str("501,619,1019,1034").unwrap();
@@ -16,7 +16,7 @@ fn main() -> anyhow::Result<()> {
     let collected = collect_chunks(new, None)?;
 
     println!("Processing {} files...", collected.len());
-    let progress = Progress::new(collected.len() as u64)?;
+    let progress = stylized_progress_bar(collected.len() as u64);
 
     let total_size = AtomicU64::new(0);
 

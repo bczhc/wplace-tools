@@ -9,7 +9,8 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use wplace_tools::{
-    CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK, Progress, collect_chunks, read_png, write_png,
+    CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK, collect_chunks, read_png,
+    stylized_progress_bar, write_png,
 };
 
 mod cli {
@@ -172,7 +173,7 @@ fn main() -> anyhow::Result<()> {
             let collected = collect_chunks(&new, tiles_range_arg.parse())?;
 
             println!("Processing {} files...", collected.len());
-            let progress = Progress::new(collected.len() as u64)?;
+            let progress = stylized_progress_bar(collected.len() as u64);
 
             // For some unknown reason, when I use ThreadLocal or even manual unsafe per-thread
             // object indexing (code commented out below), the performance gets even worse A LOT compared
@@ -211,7 +212,7 @@ fn main() -> anyhow::Result<()> {
             println!("Collecting files...");
             let collected = collect_chunks(&diff, tiles_range_arg.parse())?;
             println!("Processing {} files...", collected.len());
-            let progress = Progress::new(collected.len() as u64)?;
+            let progress = stylized_progress_bar(collected.len() as u64);
 
             collected.into_par_iter().for_each(|(c1, c2)| {
                 let base_file = base.join(format!("{c1}/{c2}.png"));
@@ -234,7 +235,7 @@ fn main() -> anyhow::Result<()> {
             println!("Collecting files...");
             let collected = collect_chunks(&new, tiles_range_arg.parse())?;
             println!("Processing {} files...", collected.len());
-            let progress = Progress::new(collected.len() as u64)?;
+            let progress = stylized_progress_bar(collected.len() as u64);
 
             collected.into_par_iter().for_each(|(c1, c2)| {
                 let base_file = base.join(format!("{c1}/{c2}.png"));
@@ -254,7 +255,7 @@ fn main() -> anyhow::Result<()> {
             println!("Collecting files...");
             let collected = collect_chunks(&base, tiles_range_arg.parse())?;
             println!("Processing {} files...", collected.len());
-            let progress = Progress::new(collected.len() as u64)?;
+            let progress = stylized_progress_bar(collected.len() as u64);
 
             collected.into_par_iter().for_each(|(c1, c2)| {
                 let base_file = base.join(format!("{c1}/{c2}.png"));
