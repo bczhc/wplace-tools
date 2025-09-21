@@ -4,7 +4,6 @@ use once_cell::sync::Lazy;
 use pathdiff::diff_paths;
 use png::{BitDepth, ColorType, Info};
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Cursor, Write};
 use std::path::Path;
@@ -84,14 +83,28 @@ pub const PALETTE: [[u8; 3]; 64] = [
     [179, 185, 209],
 ];
 
-pub static PALETTE_MAP: Lazy<HashMap<[u8; 3], u8>> = Lazy::new(|| {
-    PALETTE
-        .iter()
-        .enumerate()
-        .skip(1)
-        .map(|(a, b)| (*b, a as u8))
-        .collect()
-});
+const fn pack_rgb(rgb: &[u8]) -> u32 {
+    ((rgb[0] as u32) << 16) | ((rgb[1] as u32) << 8) | (rgb[2] as u32)
+}
+
+const fn unpack_rgb(c: u32) -> [u8; 3] {
+    [(c >> 16) as u8, ((c >> 8) & 0xff) as u8, (c & 0xff) as u8]
+}
+
+/// Use large-array-based lookup table to get the index in O(1)
+fn create_palette_lookup_table() -> Vec<u8> {
+    let mut lut = vec![u8::MAX; 0xffffff + 1];
+    for (index, x) in PALETTE.iter().enumerate().skip(1) {
+        lut[pack_rgb(x) as usize] = index.try_into().unwrap();
+    }
+    lut
+}
+
+pub static mut PALETTE_LOOKUP_TABLE: Option<&[u8]> = None;
+
+pub fn initialize() {
+    unsafe { PALETTE_LOOKUP_TABLE = Some(Vec::leak(create_palette_lookup_table())) }
+}
 
 pub fn collect_chunks(
     dir: impl AsRef<Path>,
@@ -99,7 +112,7 @@ pub fn collect_chunks(
 ) -> anyhow::Result<Vec<(u32, u32)>> {
     let mut collected = Vec::new();
     for x in WalkDir::new(&dir) {
-        let entry = x.unwrap();
+        let entry = x?;
         let path = entry.path();
         let Some(mut subpath) = diff_paths(path, &dir) else {
             continue;
@@ -134,6 +147,7 @@ pub fn collect_chunks(
 }
 
 /// Map the inner png colors to the uniform [PALETTE] indices.
+#[inline(always)]
 fn png_map_palette(palette: &[u8], index: u8, alpha_pos: usize) -> u8 {
     let index = index as usize;
     if index == alpha_pos {
@@ -142,8 +156,11 @@ fn png_map_palette(palette: &[u8], index: u8, alpha_pos: usize) -> u8 {
     if index >= palette.len() - 2 {
         panic!("invalid color index!");
     }
-    let rgb = <[u8; 3]>::try_from(&palette[(index * 3)..(index * 3 + 3)]).unwrap();
-    PALETTE_MAP[&rgb]
+    (unsafe { PALETTE_LOOKUP_TABLE.unwrap_unchecked() })[pack_rgb(&[
+        palette[index * 3],
+        palette[index * 3 + 1],
+        palette[index * 3 + 2],
+    ]) as usize]
 }
 
 pub fn read_png(path: impl AsRef<Path>, buf: &mut [u8]) -> anyhow::Result<()> {
@@ -165,11 +182,11 @@ pub fn read_png(path: impl AsRef<Path>, buf: &mut [u8]) -> anyhow::Result<()> {
         // the PNG encoder from Wplace may not put a `0` in the `trns` array. Just put a dummy
         // value here.
         .unwrap_or(usize::MAX);
-    assert!(alpha_pos < palette.len() || alpha_pos == usize::MAX);
+    debug_assert!(alpha_pos < palette.len() || alpha_pos == usize::MAX);
 
     match info.bit_depth {
         BitDepth::One => {
-            assert_eq!(png_buf_size, CHUNK_LENGTH / 8);
+            debug_assert_eq!(png_buf_size, CHUNK_LENGTH / 8);
             for i in (0..png_buf_size).rev() {
                 let byte = buf[i];
                 let base = i * 8;
@@ -184,7 +201,7 @@ pub fn read_png(path: impl AsRef<Path>, buf: &mut [u8]) -> anyhow::Result<()> {
             }
         }
         BitDepth::Two => {
-            assert_eq!(png_buf_size, CHUNK_LENGTH / 4);
+            debug_assert_eq!(png_buf_size, CHUNK_LENGTH / 4);
             for i in (0..png_buf_size).rev() {
                 let byte = buf[i];
 
@@ -195,7 +212,7 @@ pub fn read_png(path: impl AsRef<Path>, buf: &mut [u8]) -> anyhow::Result<()> {
             }
         }
         BitDepth::Four => {
-            assert_eq!(png_buf_size, CHUNK_LENGTH / 2);
+            debug_assert_eq!(png_buf_size, CHUNK_LENGTH / 2);
             for i in (0..png_buf_size).rev() {
                 let byte = buf[i];
                 let base = i * 2;
@@ -204,7 +221,7 @@ pub fn read_png(path: impl AsRef<Path>, buf: &mut [u8]) -> anyhow::Result<()> {
             }
         }
         BitDepth::Eight => {
-            assert_eq!(png_buf_size, CHUNK_LENGTH);
+            debug_assert_eq!(png_buf_size, CHUNK_LENGTH);
             for i in (0..buf.len()).rev() {
                 buf[i] = png_map_palette(palette, buf[i], alpha_pos);
             }
