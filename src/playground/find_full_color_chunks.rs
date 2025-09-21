@@ -1,3 +1,5 @@
+mod diff_size_of_chunks_changed;
+
 /// Find chunks that are fully painted (no transparency at all).
 ///
 /// This only reads `trns` from the PNG info - a high efficient way.
@@ -7,8 +9,7 @@ use rayon::prelude::*;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
-use wplace_tools::{collect_chunks, Progress};
-
+use wplace_tools::{Progress, collect_chunks};
 
 fn main() -> anyhow::Result<()> {
     let path = Path::new("/mnt/nvme/wplace-archive/2025-09-04T13-20-46.618Z+3h0m");
@@ -23,7 +24,7 @@ fn main() -> anyhow::Result<()> {
         let no_alpha = info
             .trns
             .as_ref()
-            .is_none_or(|x| x.iter().rposition(|&x| x == 0).is_none());
+            .is_none_or(|x| !x.contains(&0));
         if no_alpha {
             println!("{:?}", (x, y));
         }

@@ -13,6 +13,7 @@ walkdir = "2.5.0"
 indicatif = "0.18.0"
 pathdiff = "0.2.3"
 png = "0.18.0"
+bytesize = "2.1.0"
 
 [[bin]]
 name = "archive-tool"
@@ -21,3 +22,7 @@ path = "src/archive_tool.rs"
 [[bin]]
 name = "find-full-color-chunks"
 path = "src/playground/find_full_color_chunks.rs"
+
+[[bin]]
+name = "diff-size-of-chunks-changed"
+path = "src/playground/diff_size_of_chunks_changed.rs"
