@@ -83,12 +83,9 @@ pub const PALETTE: [[u8; 3]; 64] = [
     [179, 185, 209],
 ];
 
+/// This is used as a hashing algorithm.
 const fn pack_rgb(rgb: &[u8]) -> u32 {
     ((rgb[0] as u32) << 16) | ((rgb[1] as u32) << 8) | (rgb[2] as u32)
-}
-
-const fn unpack_rgb(c: u32) -> [u8; 3] {
-    [(c >> 16) as u8, ((c >> 8) & 0xff) as u8, (c & 0xff) as u8]
 }
 
 /// Use large-array-based lookup table to get the index in O(1)
@@ -102,7 +99,7 @@ fn create_palette_lookup_table() -> Vec<u8> {
 
 pub static mut PALETTE_LOOKUP_TABLE: Option<&[u8]> = None;
 
-pub fn initialize() {
+pub fn initialize_palette_lookup_table() {
     unsafe { PALETTE_LOOKUP_TABLE = Some(Vec::leak(create_palette_lookup_table())) }
 }
 
@@ -146,21 +143,72 @@ pub fn collect_chunks(
     Ok(collected)
 }
 
-/// Map the inner png colors to the uniform [PALETTE] indices.
-#[inline(always)]
-fn png_map_palette(palette: &[u8], index: u8, alpha_pos: usize) -> u8 {
-    let index = index as usize;
-    if index == alpha_pos {
-        return 0;
+/// Map indices in an indexed PNG -> indices in the global [PALETTE]
+pub struct PixelMapper {
+    /// Raw palette format: \[r0, g0, b0, r1, g1, b1, ...\]<br/>
+    /// Grouped png_palette format: \[\[r0, g0, b0\], \[r1, g1, b1\], ...\]
+    png_palette: Vec<[u8; 3]>,
+    /// See: https://www.w3.org/TR/PNG-DataRep.html#DR.Alpha-channel
+    trns: Vec<u8>,
+    palette_lookup_table: &'static [u8],
+}
+
+impl PixelMapper {
+    fn new(png_info: &Info) -> PixelMapper {
+        let raw_palette = png_info.palette.as_ref().expect("No palette").to_vec();
+        assert_eq!(raw_palette.len() % 3, 0);
+        let palette_size = raw_palette.len() / 3;
+        // group by three
+        let png_palette = raw_palette
+            .chunks(3)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|x| {
+                assert_eq!(x.len(), 3);
+                <[u8; 3]>::try_from(x).unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(png_palette.len(), palette_size);
+
+        let mut expanded_trns = vec![0_u8; png_palette.len()];
+        match png_info.trns.as_ref() {
+            None => {
+                // all colors in the raw palette are fully opaque
+                expanded_trns.fill(255);
+            }
+            Some(trns) => {
+                // If trns are not as long as raw_palette, expand it. The missing trns positions
+                // should all indicate a full opaque.
+                expanded_trns.write_all(trns).unwrap();
+                expanded_trns[trns.len()..].fill(255);
+            }
+        };
+
+        let lut = unsafe {
+            #[allow(static_mut_refs)]
+            if PALETTE_LOOKUP_TABLE.is_none() {
+                initialize_palette_lookup_table();
+            }
+            PALETTE_LOOKUP_TABLE.unwrap()
+        };
+
+        Self {
+            png_palette,
+            trns: expanded_trns,
+            palette_lookup_table: lut,
+        }
     }
-    if index >= palette.len() - 2 {
-        panic!("invalid color index!");
+
+    #[inline(always)]
+    pub fn map(&self, index: u8) -> u8 {
+        let index = index as usize;
+        if self.trns[index] == 0 {
+            // this pixel is a transparency!
+            // PALETTE[0] denotes a transparency
+            return 0;
+        }
+        self.palette_lookup_table[pack_rgb(&self.png_palette[index]) as usize]
     }
-    (unsafe { PALETTE_LOOKUP_TABLE.unwrap_unchecked() })[pack_rgb(&[
-        palette[index * 3],
-        palette[index * 3 + 1],
-        palette[index * 3 + 2],
-    ]) as usize]
 }
 
 pub fn read_png(path: impl AsRef<Path>, buf: &mut [u8]) -> anyhow::Result<()> {
@@ -172,17 +220,7 @@ pub fn read_png(path: impl AsRef<Path>, buf: &mut [u8]) -> anyhow::Result<()> {
     reader.next_frame(buf)?;
 
     let info = reader.info();
-    let palette = info.palette.as_ref().ok_or(anyhow!("No palette"))?.as_ref();
-    // this denotes which palette slot is a transparency
-    let alpha_pos = info
-        .trns
-        .as_ref()
-        .and_then(|x| x.as_ref().iter().rposition(|x| *x == 0))
-        // I may expect if a chunk were painted fully (that's, no transparency pixels at all),
-        // the PNG encoder from Wplace may not put a `0` in the `trns` array. Just put a dummy
-        // value here.
-        .unwrap_or(usize::MAX);
-    debug_assert!(alpha_pos < palette.len() || alpha_pos == usize::MAX);
+    let pixel_mapper = PixelMapper::new(info);
 
     match info.bit_depth {
         BitDepth::One => {
@@ -190,14 +228,14 @@ pub fn read_png(path: impl AsRef<Path>, buf: &mut [u8]) -> anyhow::Result<()> {
             for i in (0..png_buf_size).rev() {
                 let byte = buf[i];
                 let base = i * 8;
-                buf[base + 7] = png_map_palette(palette, byte & 1, alpha_pos);
-                buf[base + 6] = png_map_palette(palette, (byte >> 1) & 1, alpha_pos);
-                buf[base + 5] = png_map_palette(palette, (byte >> 2) & 1, alpha_pos);
-                buf[base + 4] = png_map_palette(palette, (byte >> 3) & 1, alpha_pos);
-                buf[base + 3] = png_map_palette(palette, (byte >> 4) & 1, alpha_pos);
-                buf[base + 2] = png_map_palette(palette, (byte >> 5) & 1, alpha_pos);
-                buf[base + 1] = png_map_palette(palette, (byte >> 6) & 1, alpha_pos);
-                buf[base] = png_map_palette(palette, (byte >> 7) & 1, alpha_pos);
+                buf[base + 7] = pixel_mapper.map(byte & 1);
+                buf[base + 6] = pixel_mapper.map((byte >> 1) & 1);
+                buf[base + 5] = pixel_mapper.map((byte >> 2) & 1);
+                buf[base + 4] = pixel_mapper.map((byte >> 3) & 1);
+                buf[base + 3] = pixel_mapper.map((byte >> 4) & 1);
+                buf[base + 2] = pixel_mapper.map((byte >> 5) & 1);
+                buf[base + 1] = pixel_mapper.map((byte >> 6) & 1);
+                buf[base] = pixel_mapper.map((byte >> 7) & 1);
             }
         }
         BitDepth::Two => {
@@ -205,10 +243,10 @@ pub fn read_png(path: impl AsRef<Path>, buf: &mut [u8]) -> anyhow::Result<()> {
             for i in (0..png_buf_size).rev() {
                 let byte = buf[i];
 
-                buf[i * 4 + 3] = png_map_palette(palette, byte & 0b11, alpha_pos);
-                buf[i * 4 + 2] = png_map_palette(palette, (byte >> 2) & 0b11, alpha_pos);
-                buf[i * 4 + 1] = png_map_palette(palette, (byte >> 4) & 0b11, alpha_pos);
-                buf[i * 4] = png_map_palette(palette, (byte >> 6) & 0b11, alpha_pos);
+                buf[i * 4 + 3] = pixel_mapper.map(byte & 0b11);
+                buf[i * 4 + 2] = pixel_mapper.map((byte >> 2) & 0b11);
+                buf[i * 4 + 1] = pixel_mapper.map((byte >> 4) & 0b11);
+                buf[i * 4] = pixel_mapper.map((byte >> 6) & 0b11);
             }
         }
         BitDepth::Four => {
@@ -216,14 +254,14 @@ pub fn read_png(path: impl AsRef<Path>, buf: &mut [u8]) -> anyhow::Result<()> {
             for i in (0..png_buf_size).rev() {
                 let byte = buf[i];
                 let base = i * 2;
-                buf[base + 1] = png_map_palette(palette, byte & 0b1111, alpha_pos);
-                buf[base] = png_map_palette(palette, (byte >> 4) & 0b1111, alpha_pos);
+                buf[base + 1] = pixel_mapper.map(byte & 0b1111);
+                buf[base] = pixel_mapper.map((byte >> 4) & 0b1111);
             }
         }
         BitDepth::Eight => {
             debug_assert_eq!(png_buf_size, CHUNK_LENGTH);
             for i in (0..buf.len()).rev() {
-                buf[i] = png_map_palette(palette, buf[i], alpha_pos);
+                buf[i] = pixel_mapper.map(buf[i]);
             }
         }
         BitDepth::Sixteen => {

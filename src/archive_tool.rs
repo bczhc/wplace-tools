@@ -8,7 +8,9 @@ use std::fs;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
-use wplace_tools::{CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK, Progress, collect_chunks, read_png, write_png, initialize};
+use wplace_tools::{
+    CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK, Progress, collect_chunks, read_png, write_png,
+};
 
 mod cli {
     use clap::{Args, Parser, Subcommand, ValueHint};
@@ -158,7 +160,6 @@ fn apply_png(
 }
 
 fn main() -> anyhow::Result<()> {
-    initialize();
     let args = cli::Cli::parse();
     match args.command {
         Commands::Diff {

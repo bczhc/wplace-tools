@@ -3,10 +3,9 @@ use rayon::prelude::*;
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use wplace_tools::{CHUNK_LENGTH, Progress, collect_chunks, read_png, initialize};
+use wplace_tools::{CHUNK_LENGTH, Progress, collect_chunks, read_png};
 
 fn main() -> anyhow::Result<()> {
-    initialize();
     // let range = TilesRange::parse_str("501,619,1019,1034").unwrap();
 
     let base = Path::new("/mnt/nvme/wplace-archives/1/2025-09-21T06-32-28.284Z+3h2m");
