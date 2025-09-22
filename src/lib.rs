@@ -1,3 +1,5 @@
+#![feature(file_buffered)]
+
 use anyhow::anyhow;
 use indicatif::{ProgressBar, ProgressStyle};
 use once_cell::sync::Lazy;
@@ -5,8 +7,9 @@ use pathdiff::diff_paths;
 use png::{BitDepth, ColorType, Info};
 use std::borrow::Cow;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Cursor, Write};
-use std::path::Path;
+use std::io::{BufRead, BufReader, BufWriter, Cursor, Write};
+use std::path::{Path, PathBuf};
+use std::{fs, io};
 use walkdir::WalkDir;
 
 pub const CHUNK_LENGTH: usize = 1_000_000;
@@ -315,6 +318,34 @@ pub fn stylized_progress_bar(len: u64) -> ProgressBar {
     pb
 }
 
+pub type ChunkNumber = (u32, u32);
+
+pub fn write_index_file(path: impl AsRef<Path>, chunks: &[ChunkNumber]) -> anyhow::Result<()> {
+    let mut writer = File::create_buffered(path)?;
+    use io::Write;
+    for &(x, y) in chunks {
+        writeln!(&mut writer, "{x},{y}")?;
+    }
+    Ok(())
+}
+
+pub fn read_index_file(path: impl AsRef<Path>) -> anyhow::Result<Vec<ChunkNumber>> {
+    let reader = File::open_buffered(path)?;
+    let mut collected = Vec::new();
+    for x in reader.lines() {
+        match x {
+            Ok(s) if !s.is_empty() => {
+                let mut split = s.split(',');
+                let x = split.next().unwrap().parse::<u32>()?;
+                let y = split.next().iter().next().unwrap().parse::<u32>()?;
+                collected.push((x, y));
+            }
+            _ => continue,
+        }
+    }
+    Ok(collected)
+}
+
 #[derive(Copy, Clone)]
 pub struct TilesRange {
     pub x_min: u32,
@@ -336,4 +367,13 @@ impl TilesRange {
             y_max: split[3].parse().ok()?,
         })
     }
+}
+
+/// Build the specified chunk file and create its parent folder if necessary.
+#[inline(always)]
+pub fn new_chunk_file(root: impl AsRef<Path>, (x, y): ChunkNumber, ext: &str) -> PathBuf {
+    let subpath = root.as_ref().join(format!("{x}"));
+    let path = subpath.join(format!("{y}.{ext}"));
+    fs::create_dir_all(subpath).unwrap();
+    path
 }

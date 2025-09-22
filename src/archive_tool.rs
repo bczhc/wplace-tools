@@ -9,8 +9,8 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use wplace_tools::{
-    CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK, collect_chunks, read_png,
-    stylized_progress_bar, write_png,
+    CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK, collect_chunks, new_chunk_file,
+    read_index_file, read_png, stylized_progress_bar, write_index_file, write_png,
 };
 
 mod cli {
@@ -26,6 +26,7 @@ mod cli {
 
     #[derive(Debug, Subcommand)]
     pub enum Commands {
+        /// Create diff from `base` to `new`.
         Diff {
             #[arg(value_name = "BASE", value_hint = ValueHint::FilePath)]
             base: PathBuf,
@@ -35,11 +36,9 @@ mod cli {
 
             #[arg(value_name = "OUTPUT", value_hint = ValueHint::FilePath)]
             output: PathBuf,
-
-            #[command(flatten)]
-            tiles_range_arg: TilesRangeArg,
         },
 
+        /// Apply diff on `base`.
         Apply {
             #[arg(value_name = "BASE", value_hint = ValueHint::FilePath)]
             base: PathBuf,
@@ -49,22 +48,18 @@ mod cli {
 
             #[arg(value_name = "OUTPUT", value_hint = ValueHint::FilePath)]
             output: PathBuf,
-
-            #[command(flatten)]
-            tiles_range_arg: TilesRangeArg,
         },
 
+        /// Compare two archives. This is used to verify if a diff-apply pipeline works correctly.
         Compare {
             #[arg(value_name = "BASE", value_hint = ValueHint::FilePath)]
             base: PathBuf,
 
             #[arg(value_name = "NEW", value_hint = ValueHint::FilePath)]
             new: PathBuf,
-
-            #[command(flatten)]
-            tiles_range_arg: TilesRangeArg,
         },
 
+        /// Merely copy the chunks. This is useful when used with `tiles_range`.
         Copy {
             #[arg(value_name = "BASE", value_hint = ValueHint::FilePath)]
             base: PathBuf,
@@ -102,20 +97,29 @@ fn compare_png(base: impl AsRef<Path>, new: impl AsRef<Path>) -> anyhow::Result<
     Ok(img1 == img2)
 }
 
+/// Returns if the two image data is identical.
+#[inline(always)]
 fn diff_png(
     base: impl AsRef<Path>,
     new: impl AsRef<Path>,
     diff_out: impl AsRef<Path>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
+    let base = base.as_ref();
+    let new = new.as_ref();
+
     let mut buffers = Buffers::default();
     let (buf1, buf2, diff_buf) = buffers.split_mut();
 
-    if base.as_ref().exists() {
+    if base.exists() {
         read_png(base, buf1)?;
-    } else {
-        // buf1.fill(0);
     }
     read_png(new, buf2)?;
+
+    // It's expecting that a large percent of the chunks are not mutated.
+    // Thus in this case, disabling further diff creation can reduce the process time.
+    if base.exists() && buf1 == buf2 {
+        return Ok(true);
+    }
 
     for i in 0..CHUNK_LENGTH {
         // They shouldn't have two highest ones. Coerce them.
@@ -130,7 +134,7 @@ fn diff_png(
     let mut compressor = flate2::write::DeflateEncoder::new(out_file, Compression::default());
     compressor.write_all(diff_buf)?;
 
-    Ok(())
+    Ok(false)
 }
 
 fn apply_png(
@@ -163,33 +167,31 @@ fn apply_png(
 fn main() -> anyhow::Result<()> {
     let args = cli::Cli::parse();
     match args.command {
-        Commands::Diff {
-            base,
-            new,
-            output,
-            tiles_range_arg,
-        } => {
+        Commands::Diff { base, new, output } => {
+            fs::create_dir_all(&output)?;
             println!("Collecting files...");
-            let collected = collect_chunks(&new, tiles_range_arg.parse())?;
+            let collected = collect_chunks(&new, None)?;
+            // files that make up a full snapshot
+            let index_file = output.join("index.txt");
+            write_index_file(index_file, &collected)?;
 
             println!("Processing {} files...", collected.len());
             let progress = stylized_progress_bar(collected.len() as u64);
 
             // For some unknown reason, when I use ThreadLocal or even manual unsafe per-thread
-            // object indexing (code commented out below), the performance gets even worse A LOT compared
-            // to the origin
+            // object indexing (code commented out below), the performance gets even worse A LOT
+            // compared to the origin
             // version (allocating memory every time on `diff_png` called). Don't know why.
 
             // let mut buffers = vec![Buffers::default(); rayon::current_num_threads()];
             // let buffers_ptr = SharedBuffer(buffers.as_mut_ptr());
 
-            collected.into_par_iter().for_each(|(c1, c2)| {
-                let base_file = base.join(format!("{c1}/{c2}.png"));
-                let new_file = new.join(format!("{c1}/{c2}.png"));
-                let diff_file = output.join(format!("{c1}/{c2}.bin"));
-                // let buffers_ptr_ref = buffers_ptr;
+            collected.into_par_iter().for_each(|(x, y)| {
+                let base_file = base.join(format!("{x}/{y}.png"));
+                let new_file = new.join(format!("{x}/{y}.png"));
+                let diff_file = new_chunk_file(&output, (x, y), "bin");
 
-                fs::create_dir_all(diff_file.parent().unwrap()).unwrap();
+                // let buffers_ptr_ref = buffers_ptr;
 
                 // let local_buffers = unsafe {
                 //     &mut *buffers_ptr_ref
@@ -197,50 +199,60 @@ fn main() -> anyhow::Result<()> {
                 //         .add(rayon::current_thread_index().unwrap())
                 // };
 
-                diff_png(base_file, new_file, diff_file).unwrap();
+                let _ = diff_png(base_file, new_file, diff_file).unwrap();
                 progress.inc(1);
             });
 
             progress.finish();
         }
-        Commands::Apply {
-            base,
-            diff,
-            output,
-            tiles_range_arg,
-        } => {
+        Commands::Apply { base, diff, output } => {
+            fs::create_dir_all(&output)?;
             println!("Collecting files...");
-            let collected = collect_chunks(&diff, tiles_range_arg.parse())?;
-            println!("Processing {} files...", collected.len());
-            let progress = stylized_progress_bar(collected.len() as u64);
+            let index = read_index_file(diff.join("index.txt"))?;
+            println!("Processing {} files...", index.len());
+            let progress = stylized_progress_bar(index.len() as u64);
 
-            collected.into_par_iter().for_each(|(c1, c2)| {
-                let base_file = base.join(format!("{c1}/{c2}.png"));
-                let diff_file = diff.join(format!("{c1}/{c2}.bin"));
-                let output_file = output.join(format!("{c1}/{c2}.png"));
+            index.into_par_iter().for_each(|(x, y)| {
+                let base_file = base.join(format!("{x}/{y}.png"));
+                let diff_file = diff.join(format!("{x}/{y}.bin"));
+                let output_file = new_chunk_file(&output, (x, y), "png");
 
-                fs::create_dir_all(output_file.parent().unwrap()).unwrap();
-
-                apply_png(base_file, diff_file, output_file).unwrap();
+                if diff_file.exists() {
+                    // chunk changed
+                    apply_png(base_file, diff_file, output_file).unwrap();
+                } else {
+                    // chunk not changed; just copy one from `base`
+                    fs::copy(&base_file, &output_file).unwrap();
+                }
                 progress.inc(1);
             });
 
             progress.finish();
         }
-        Commands::Compare {
-            base,
-            new,
-            tiles_range_arg,
-        } => {
-            println!("Collecting files...");
-            let collected = collect_chunks(&new, tiles_range_arg.parse())?;
-            println!("Processing {} files...", collected.len());
-            let progress = stylized_progress_bar(collected.len() as u64);
+        Commands::Compare { base, new } => {
+            println!("Collecting files 'base'...");
+            let mut base_collected = collect_chunks(&base, None)?;
+            println!("Collecting files 'new'...");
+            let mut new_collected = collect_chunks(&new, None)?;
 
-            collected.into_par_iter().for_each(|(c1, c2)| {
-                let base_file = base.join(format!("{c1}/{c2}.png"));
-                let new_file = new.join(format!("{c1}/{c2}.png"));
-                if !compare_png(&base_file, &new_file).unwrap() {
+            base_collected.sort();
+            new_collected.sort();
+            if base_collected != new_collected {
+                return Err(anyhow::anyhow!("File lists differ."));
+            }
+
+            let length = base_collected.len();
+            println!("Processing {} files...", length);
+            let progress = stylized_progress_bar(length as u64);
+
+            base_collected.into_par_iter().for_each(|(x, y)| {
+                let base_file = base.join(format!("{x}/{y}.png"));
+                let new_file = new.join(format!("{x}/{y}.png"));
+                let result = compare_png(&base_file, &new_file);
+                if result.is_err() {
+                    println!("{x}/{y}");
+                }
+                if !result.unwrap() {
                     eprintln!("{} and {} differ", base_file.display(), new_file.display());
                 }
                 progress.inc(1);
@@ -252,15 +264,15 @@ fn main() -> anyhow::Result<()> {
             output,
             tiles_range_arg,
         } => {
+            fs::create_dir_all(&output)?;
             println!("Collecting files...");
             let collected = collect_chunks(&base, tiles_range_arg.parse())?;
             println!("Processing {} files...", collected.len());
             let progress = stylized_progress_bar(collected.len() as u64);
 
-            collected.into_par_iter().for_each(|(c1, c2)| {
-                let base_file = base.join(format!("{c1}/{c2}.png"));
-                let output_file = output.join(format!("{c1}/{c2}.png"));
-                fs::create_dir_all(output_file.parent().unwrap()).unwrap();
+            collected.into_par_iter().for_each(|(x, y)| {
+                let base_file = base.join(format!("{x}/{y}.png"));
+                let output_file = new_chunk_file(&output, (x, y), "png");
                 fs::copy(base_file, output_file).unwrap();
                 progress.inc(1);
             });
@@ -297,6 +309,7 @@ impl Default for Buffers {
 }
 
 #[derive(Copy, Clone)]
+#[allow(unused)]
 struct SharedBuffer(*mut Buffers);
 
 unsafe impl Send for SharedBuffer {}
