@@ -3,22 +3,22 @@
 
 use crate::cli::Commands;
 use byteorder::{ByteOrder, LE};
+use chrono::{Local, TimeZone};
 use clap::Parser;
-use flate2::write::DeflateEncoder;
-use flate2::Compression;
 use log::info;
 use rayon::prelude::*;
+use std::collections::HashSet;
 use std::fs;
 use std::fs::File;
-use std::io::{stdout, BufReader, BufWriter, Cursor, Read, Write};
 use std::path::Path;
 use std::sync::mpsc::sync_channel;
+use std::sync::{Arc, Mutex};
 use std::thread::spawn;
 use std::time::{SystemTime, UNIX_EPOCH};
 use wplace_tools::diff_file::{DiffFileReader, DiffFileWriter, Metadata};
 use wplace_tools::{
-    collect_chunks, new_chunk_file, read_png, set_up_logger, stylized_progress_bar, unwrap_os_str,
-    write_png, CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK,
+    CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK, collect_chunks, new_chunk_file, read_png,
+    set_up_logger, stylized_progress_bar, unwrap_os_str, write_png,
 };
 
 mod cli {
@@ -171,10 +171,11 @@ fn main() -> anyhow::Result<()> {
             info!("Creating diff file...");
             let parent_name = unwrap_os_str!(base.file_name().expect("No filename"));
             let this_name = unwrap_os_str!(new.file_name().expect("No filename"));
-            let out_stream = BufWriter::new(stdout().lock());
+            let output_file = File::create_buffered(output)?;
             let mut diff_file = DiffFileWriter::new(
-                out_stream,
+                output_file,
                 Metadata {
+                    diff_count: 0, /* placeholder */
                     name: this_name.into(),
                     parent: parent_name.into(),
                     creation_time: SystemTime::now()
@@ -182,7 +183,7 @@ fn main() -> anyhow::Result<()> {
                         .unwrap()
                         .as_millis() as u64,
                 },
-                &collected,
+                collected.clone(),
             )?;
 
             let (tx, rx) = sync_channel(1024);
@@ -203,24 +204,32 @@ fn main() -> anyhow::Result<()> {
                 progress.finish();
             });
 
+            let mut diff_counter = 0_u32;
             for (x, y, diff) in rx {
                 diff_file.add_chunk_diff((x, y), &diff)?;
+                diff_counter += 1;
             }
+            diff_file.finish(diff_counter)?;
         }
         Commands::Apply { base, diff, output } => {
             info!("Opening diff file...");
             let diff_file = DiffFileReader::new(File::open_buffered(&diff)?)?;
-            let index = &diff_file.index;
+            let index = diff_file.index.clone();
+            let index_length = index.len();
+            let metadata = &diff_file.metadata;
             info!(
-                "Total chunks: {}, parent: {}, this: {}, creation time: {}",
-                index.len(),
-                diff_file.metadata.parent,
-                diff_file.metadata.name,
-                diff_file.metadata.creation_time
+                "Total chunks: {}, parent: {}, name: {}, creation time: {}",
+                index_length,
+                metadata.parent,
+                metadata.name,
+                Local
+                    .timestamp_millis_opt(metadata.creation_time as i64)
+                    .unwrap()
             );
+            let changed_chunks = Arc::new(Mutex::new(HashSet::new()));
 
-            info!("Processing {} files...", index.len());
-            let progress = stylized_progress_bar(index.len() as u64);
+            info!("Applying diff to {} chunks...", metadata.diff_count);
+            let progress = stylized_progress_bar(metadata.diff_count as u64);
 
             let iter = diff_file.chunk_diff_iter()?;
             iter.into_iter().par_bridge().for_each(|x| {
@@ -231,7 +240,29 @@ fn main() -> anyhow::Result<()> {
                 let base_file = base.join(format!("{chunk_x}/{chunk_y}.png"));
                 let output_file = new_chunk_file(&output, (chunk_x, chunk_y), "png");
                 apply_png(base_file, output_file, diff_data.try_into().unwrap()).unwrap();
+                changed_chunks.lock().unwrap().insert((chunk_x, chunk_y));
                 progress.inc(1);
+            });
+            progress.finish();
+
+            info!("Copying unchanged chunks...");
+            let changed_chunks = Arc::try_unwrap(changed_chunks)
+                .unwrap()
+                .into_inner()
+                .unwrap();
+            let progress = stylized_progress_bar(index_length as u64 - changed_chunks.len() as u64);
+
+            index.into_par_iter().for_each(|(chunk_x, chunk_y)| {
+                if !changed_chunks.contains(&(chunk_x, chunk_y)) {
+                    // chunks that are in the archive index but don't have their diff data
+                    // are unchanged
+                    fs::copy(
+                        base.join(format!("{chunk_x}/{chunk_y}.png")),
+                        new_chunk_file(&output, (chunk_x, chunk_y), "png"),
+                    )
+                    .unwrap();
+                    progress.inc(1);
+                }
             });
             progress.finish();
 
@@ -268,7 +299,8 @@ fn main() -> anyhow::Result<()> {
             info!("Processing {} files...", length);
             let progress = stylized_progress_bar(length as u64);
 
-            base_collected.into_par_iter().for_each(|(x, y)| {
+            // job-stealing parallelization is enough here
+            base_collected.into_iter().par_bridge().for_each(|(x, y)| {
                 let base_file = base.join(format!("{x}/{y}.png"));
                 let new_file = new.join(format!("{x}/{y}.png"));
                 let result = compare_png(&base_file, &new_file).unwrap();

@@ -5,7 +5,6 @@
 pub mod diff_file;
 
 use anyhow::anyhow;
-use bincode::config::Configuration;
 use indicatif::{ProgressBar, ProgressStyle};
 use once_cell::sync::Lazy;
 use pathdiff::diff_paths;
@@ -365,11 +364,6 @@ pub fn set_up_logger() {
         }
     }
     env_logger::init();
-}
-
-#[inline(always)]
-pub fn bincode_config() -> Configuration {
-    bincode::config::standard()
 }
 
 pub macro unwrap_os_str($x:expr) {
