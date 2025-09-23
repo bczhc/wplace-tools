@@ -10,7 +10,7 @@ use log::info;
 use rayon::prelude::*;
 use std::fs;
 use std::fs::File;
-use std::io::{stdout, BufReader, BufWriter, Read};
+use std::io::{stdout, BufReader, BufWriter, Cursor, Read, Write};
 use std::path::Path;
 use std::sync::mpsc::sync_channel;
 use std::thread::spawn;
@@ -172,7 +172,6 @@ fn main() -> anyhow::Result<()> {
             let parent_name = unwrap_os_str!(base.file_name().expect("No filename"));
             let this_name = unwrap_os_str!(new.file_name().expect("No filename"));
             let out_stream = BufWriter::new(stdout().lock());
-            let out_stream = DeflateEncoder::new(out_stream, Compression::default());
             let mut diff_file = DiffFileWriter::new(
                 out_stream,
                 Metadata {
@@ -232,6 +231,7 @@ fn main() -> anyhow::Result<()> {
                 let base_file = base.join(format!("{chunk_x}/{chunk_y}.png"));
                 let output_file = new_chunk_file(&output, (chunk_x, chunk_y), "png");
                 apply_png(base_file, output_file, diff_data.try_into().unwrap())?;
+                progress.inc(1);
             }
             progress.finish();
 

@@ -1,9 +1,10 @@
-use crate::{CHUNK_LENGTH, ChunkNumber, bincode_config};
+use crate::{bincode_config, ChunkNumber, CHUNK_LENGTH};
 use bincode::{Decode, Encode};
-use byteorder::{LE, WriteBytesExt};
+use byteorder::{WriteBytesExt, LE};
+use flate2::{read, write, Compression};
 use std::io;
 use std::io::{Read, Write};
-use std::sync::mpsc::{Receiver, sync_channel};
+use std::sync::mpsc::{sync_channel, Receiver};
 use std::thread::spawn;
 use yeet_ops::yeet;
 
@@ -25,7 +26,7 @@ impl Metadata {
 
 /// An assembled diff file that saves all the chunk changes.
 pub struct DiffFileWriter<W: Write> {
-    writer: W,
+    writer: DoubleCompressor<W>,
 }
 
 impl<W> DiffFileWriter<W>
@@ -38,10 +39,11 @@ where
         archive_index: &[ChunkNumber],
     ) -> anyhow::Result<Self> {
         writer.write_all(&MAGIC)?;
-        metadata.write_to(&mut writer)?;
-        bincode::encode_into_std_write(archive_index, &mut writer, bincode_config())?;
+        let mut compressor = DoubleCompressor::new(writer);
+        metadata.write_to(&mut compressor)?;
+        bincode::encode_into_std_write(archive_index, &mut compressor, bincode_config())?;
 
-        Ok(Self { writer })
+        Ok(Self { writer: compressor })
     }
 
     #[inline(always)]
@@ -55,10 +57,10 @@ where
     }
 }
 
-const CHUNK_DIFF_SIZE: usize = 8 /* size of ChunkNumber a.k.a. u16 */ + 8 + CHUNK_LENGTH;
+const CHUNK_DIFF_SIZE: usize = 2 /* size of ChunkNumber a.k.a. u16 */ + 2 + CHUNK_LENGTH;
 
 pub struct DiffFileReader<R: Read> {
-    reader: R,
+    reader: DoubleDecompressor<R>,
     pub index: Vec<ChunkNumber>,
     pub metadata: Metadata,
 }
@@ -73,6 +75,7 @@ where
         if magic_buf != MAGIC {
             yeet!(anyhow::anyhow!("Invalid magic number"));
         }
+        let mut reader = DoubleDecompressor::new(reader);
         let metadata: Metadata = bincode::decode_from_std_read(&mut reader, bincode_config())?;
         let index: Vec<ChunkNumber> = bincode::decode_from_std_read(&mut reader, bincode_config())?;
         Ok(Self {
@@ -104,5 +107,49 @@ where
         });
 
         Ok(rx)
+    }
+}
+
+struct DoubleCompressor<W: Write> {
+    inner: write::DeflateEncoder<write::DeflateEncoder<W>>,
+}
+
+impl<W: Write> DoubleCompressor<W> {
+    #[inline(always)]
+    pub fn new(writer: W) -> Self {
+        let compressor = write::DeflateEncoder::new(writer, Compression::default());
+        let compressor = write::DeflateEncoder::new(compressor, Compression::default());
+        Self { inner: compressor }
+    }
+}
+
+impl<W: Write> Write for DoubleCompressor<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.inner.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+struct DoubleDecompressor<R: Read> {
+    inner: read::DeflateDecoder<read::DeflateDecoder<R>>,
+}
+
+impl<R: Read> DoubleDecompressor<R> {
+    #[inline(always)]
+    pub fn new(reader: R) -> Self {
+        let decompressor = read::DeflateDecoder::new(reader);
+        let decompressor = read::DeflateDecoder::new(decompressor);
+        Self {
+            inner: decompressor,
+        }
+    }
+}
+
+impl<R: Read> Read for DoubleDecompressor<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.inner.read(buf)
     }
 }
