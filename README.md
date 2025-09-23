@@ -15,52 +15,42 @@ As an example: there are two world archives retrieved
 from [wplace-archives](https://github.com/murolem/wplace-archives):
 
 ```
-5.0G	2025-09-04T10-21-29.961Z+2h59m (1)
-5.2G	2025-09-04T13-20-46.618Z+3h0m (2)
+9.2G	2025-09-21T06-32-28.284Z+3h2m    (1)
+9.1G	2025-09-21T09-35-13.789Z+2h49m   (2)
 ```
 
 For creating an incremental backup of (2), with (1) as its parent, do:
 
 ```shell
-parent='2025-09-04T10-21-29.961Z+2h59m'
-archive='2025-09-04T13-20-46.618Z+3h0m'
-target/release/archive-tool diff "$parent" "$archive" ./diff
+parent='2025-09-21T06-32-28.284Z+3h2m'
+archive='2025-09-21T09-35-13.789Z+2h49m'
+target/release/archive-tool diff "$parent" "$archive" ./diff.bin
 ```
 
-An extra compression needs to be done. This reduces disk usage further.
+Standalone file `diff.bin` saves all the changes from archive (1) to (2). Its size
+is small a lot.
 
 ```console
-❯ tar -c diff | pigz > diff.tgz
-❯ du -sh diff.tgz
-72M	diff.tgz
+❯ du -sh diff.bin
+34M	diff.bin
 ```
-
-Now we only have a 72M incremental data pack.
 
 ## Applying incremental data
 
-First extract the diff pack.
-
 ```shell
-tar -xzf diff.tgz
+parent='2025-09-21T06-32-28.284Z+3h2m'
+archive='restored'
+target/release/archive-tool apply "$parent" ./diff.bin "$archive"
 ```
 
-Then apply the changes.
+Archive `2025-09-21T09-35-13.789Z+2h49m` will be restored.
 
-```shell
-parent='2025-09-04T10-21-29.961Z+2h59m'
-archive='2025-09-04T13-20-46.618Z+3h0m-restored'
-target/release/archive-tool apply "$parent" ./diff "$archive"
-```
-
-Archive `2025-09-04T13-20-46.618Z+3h0m` will be restored.
-
-You can use `archive-tool compare` to verify the restoration process.
+You can use `archive-tool compare` to verify the restoration.
 
 ```shell
 target/release/archive-tool compare \
-  '2025-09-04T13-20-46.618Z+3h0m' \
-  '2025-09-04T13-20-46.618Z+3h0m-restored'
+  '2025-09-21T09-35-13.789Z+2h49m' \
+  'restored'
 ```
 
 No error will encounter. The two archives are identical.
