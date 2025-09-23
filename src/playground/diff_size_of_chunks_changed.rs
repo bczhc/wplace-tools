@@ -3,6 +3,7 @@ use rayon::prelude::*;
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+use log::info;
 use wplace_tools::{CHUNK_LENGTH, collect_chunks, read_png, stylized_progress_bar};
 
 fn main() -> anyhow::Result<()> {
@@ -12,10 +13,10 @@ fn main() -> anyhow::Result<()> {
     let new = Path::new("/mnt/nvme/wplace-archives/1/2025-09-21T09-35-13.789Z+2h49m");
     let diff = Path::new("/mnt/nvme/wplace-archives/1/diff-by-cmp");
 
-    println!("Collecting files...");
+    info!("Collecting files...");
     let collected = collect_chunks(new, None)?;
 
-    println!("Processing {} files...", collected.len());
+    info!("Processing {} files...", collected.len());
     let progress = stylized_progress_bar(collected.len() as u64);
 
     let total_size = AtomicU64::new(0);
@@ -52,7 +53,7 @@ fn main() -> anyhow::Result<()> {
 
     progress.finish();
 
-    println!(
+    info!(
         "{}",
         ByteSize(total_size.load(Ordering::SeqCst)).display().iec()
     );

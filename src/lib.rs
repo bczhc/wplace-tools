@@ -9,7 +9,8 @@ use std::borrow::Cow;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Cursor, Write};
 use std::path::{Path, PathBuf};
-use std::{fs, io};
+use std::{env, fs, io};
+use std::env::set_var;
 use walkdir::WalkDir;
 
 pub const CHUNK_LENGTH: usize = 1_000_000;
@@ -376,4 +377,11 @@ pub fn new_chunk_file(root: impl AsRef<Path>, (x, y): ChunkNumber, ext: &str) ->
     let path = subpath.join(format!("{y}.{ext}"));
     fs::create_dir_all(subpath).unwrap();
     path
+}
+
+pub fn set_up_logger() {
+    if env::var("RUST_LOG").is_err() {
+        unsafe { set_var("RUST_LOG", "info"); }
+    }
+    env_logger::init();
 }

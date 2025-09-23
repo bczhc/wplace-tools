@@ -4,14 +4,13 @@ use crate::cli::Commands;
 use clap::Parser;
 use flate2::Compression;
 use rayon::prelude::*;
-use std::fs;
+use std::{env, fs};
+use std::env::set_var;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
-use wplace_tools::{
-    CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK, collect_chunks, new_chunk_file,
-    read_index_file, read_png, stylized_progress_bar, write_index_file, write_png,
-};
+use log::info;
+use wplace_tools::{CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK, collect_chunks, new_chunk_file, read_index_file, read_png, stylized_progress_bar, write_index_file, write_png, set_up_logger};
 
 mod cli {
     use clap::{Args, Parser, Subcommand, ValueHint};
@@ -165,17 +164,18 @@ fn apply_png(
 }
 
 fn main() -> anyhow::Result<()> {
+    set_up_logger();
     let args = cli::Cli::parse();
     match args.command {
         Commands::Diff { base, new, output } => {
             fs::create_dir_all(&output)?;
-            println!("Collecting files...");
+            info!("Collecting files...");
             let collected = collect_chunks(&new, None)?;
             // files that make up a full snapshot
             let index_file = output.join("index.txt");
             write_index_file(index_file, &collected)?;
 
-            println!("Processing {} files...", collected.len());
+            info!("Processing {} files...", collected.len());
             let progress = stylized_progress_bar(collected.len() as u64);
 
             // For some unknown reason, when I use ThreadLocal or even manual unsafe per-thread
@@ -207,9 +207,9 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Apply { base, diff, output } => {
             fs::create_dir_all(&output)?;
-            println!("Collecting files...");
+            info!("Collecting files...");
             let index = read_index_file(diff.join("index.txt"))?;
-            println!("Processing {} files...", index.len());
+            info!("Processing {} files...", index.len());
             let progress = stylized_progress_bar(index.len() as u64);
 
             index.into_par_iter().for_each(|(x, y)| {
@@ -230,9 +230,9 @@ fn main() -> anyhow::Result<()> {
             progress.finish();
         }
         Commands::Compare { base, new } => {
-            println!("Collecting files 'base'...");
+            info!("Collecting files 'base'...");
             let mut base_collected = collect_chunks(&base, None)?;
-            println!("Collecting files 'new'...");
+            info!("Collecting files 'new'...");
             let mut new_collected = collect_chunks(&new, None)?;
 
             base_collected.sort();
@@ -242,18 +242,15 @@ fn main() -> anyhow::Result<()> {
             }
 
             let length = base_collected.len();
-            println!("Processing {} files...", length);
+            info!("Processing {} files...", length);
             let progress = stylized_progress_bar(length as u64);
 
             base_collected.into_par_iter().for_each(|(x, y)| {
                 let base_file = base.join(format!("{x}/{y}.png"));
                 let new_file = new.join(format!("{x}/{y}.png"));
-                let result = compare_png(&base_file, &new_file);
-                if result.is_err() {
-                    println!("{x}/{y}");
-                }
-                if !result.unwrap() {
-                    eprintln!("{} and {} differ", base_file.display(), new_file.display());
+                let result = compare_png(&base_file, &new_file).unwrap();
+                if !result {
+                    info!("{} and {} differ", base_file.display(), new_file.display());
                 }
                 progress.inc(1);
             });
@@ -265,9 +262,9 @@ fn main() -> anyhow::Result<()> {
             tiles_range_arg,
         } => {
             fs::create_dir_all(&output)?;
-            println!("Collecting files...");
+            info!("Collecting files...");
             let collected = collect_chunks(&base, tiles_range_arg.parse())?;
-            println!("Processing {} files...", collected.len());
+            info!("Processing {} files...", collected.len());
             let progress = stylized_progress_bar(collected.len() as u64);
 
             collected.into_par_iter().for_each(|(x, y)| {
