@@ -2,11 +2,50 @@
 //!
 //! ## File Format
 //!
-//! \[ Magic | Metadata | ArchiveIndex | ChunkDiff 1 | ChunkDiff 2 | ... | ChunkDiff N \]
+//! \[ [`MAGIC`] | [`Metadata`] | [`ArchiveIndex`] | Compressed diff stream \]
 //!
-//! ## ChunkDiff Format
+//! **diff stream:**
 //!
-//! \[ chunk_x (u16) | chunk_y (u16) | diff_data (\[u8; 1_000_000\]) \]
+//!   \[ chunk0_x (u16) | chunk1_y (u16) | diff_data (\[u8; 1_000_000\])
+//!   | chunk1_x (u16) | chunk2_y (u16) | diff_data (\[u8; 1_000_000\])
+//!   | ...
+//!   | chunkN_x (u16) | chunkN_y (u16) | diff_data (\[u8; 1_000_000\]) \]
+//! 
+//! ## Synopsis
+//! 
+//! ```text
+//! File Format
+//! └── [ Magic ]
+//! └── [ Metadata ]
+//!     ├── diff_count : u32
+//!     ├── name_length : u32
+//!     ├── name : [u8; name_length]
+//!     ├── parent_length : u32
+//!     ├── parent : [u8; parent_length]
+//!     └── creation_time : u64
+//! └── [ ArchiveIndex ]
+//!     ├── entry_count : u32
+//!     ├── compressed_data_length : u32
+//!     └── compressed_data : [u8; compressed_data_length]
+//!         ├── chunk0_x : u16
+//!         ├── chunk0_y : u16
+//!         ├── chunk1_x : u16
+//!         ├── chunk1_y : u16
+//!         ├── ...
+//!         ├── chunkN_x : u16
+//!         └── chunkN_y : u16
+//! └── [ Compressed diff stream ]
+//!     ├── chunk0_x : u16
+//!     ├── chunk1_y : u16
+//!     ├── diff_data : [u8; 1_000_000]
+//!     ├── chunk1_x : u16
+//!     ├── chunk2_y : u16
+//!     ├── diff_data : [u8; 1_000_000]
+//!     ├── ...
+//!     ├── chunkN_x : u16
+//!     ├── chunkN_y : u16
+//!     └── diff_data : [u8; 1_000_000]
+//! ```
 //!
 //! All integer serializations are in little-endian.
 
@@ -234,9 +273,9 @@ impl ReadFrom for String {
 
 /// ## Serialization format
 ///
-/// \[ chunks_count (u32) | compressed_data_length (u32) | compressed_data (var-length) \]
+/// \[ entry count (u32) | compressed data length (u32) | compressed data (var-length) \]
 ///
-/// ## Compressed data format
+/// **Compressed data expands to:**
 ///
 /// \[ chunk0_x (u16) | chunk0_y (u16) | chunk1_x (u16) | chunk1_y (u16) | ... | chunkN_x (u16) | chunkN_y (u16) \]
 struct ArchiveIndex(Vec<ChunkNumber>);
