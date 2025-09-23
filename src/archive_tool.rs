@@ -223,16 +223,16 @@ fn main() -> anyhow::Result<()> {
             let progress = stylized_progress_bar(index.len() as u64);
 
             let iter = diff_file.chunk_diff_iter()?;
-            for x in iter {
-                let x = x?;
+            iter.into_iter().par_bridge().for_each(|x| {
+                let x = x.unwrap();
                 let chunk_x = LE::read_u16(&x[0..2]);
                 let chunk_y = LE::read_u16(&x[2..4]);
                 let diff_data = &x[4..];
                 let base_file = base.join(format!("{chunk_x}/{chunk_y}.png"));
                 let output_file = new_chunk_file(&output, (chunk_x, chunk_y), "png");
-                apply_png(base_file, output_file, diff_data.try_into().unwrap())?;
+                apply_png(base_file, output_file, diff_data.try_into().unwrap()).unwrap();
                 progress.inc(1);
-            }
+            });
             progress.finish();
 
             /*index.into_par_iter().for_each(|(x, y)| {
