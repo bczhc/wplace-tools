@@ -1,21 +1,28 @@
 #![feature(file_buffered)]
+#![feature(yeet_expr)]
+#![feature(decl_macro)]
+
+pub mod diff_file;
 
 use anyhow::anyhow;
+use bincode::config::Configuration;
 use indicatif::{ProgressBar, ProgressStyle};
 use once_cell::sync::Lazy;
 use pathdiff::diff_paths;
 use png::{BitDepth, ColorType, Info};
 use std::borrow::Cow;
+use std::env::set_var;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Cursor, Write};
 use std::path::{Path, PathBuf};
-use std::{env, fs, io};
-use std::env::set_var;
+use std::{env, fs};
 use walkdir::WalkDir;
 
 pub const CHUNK_LENGTH: usize = 1_000_000;
 pub const MUTATION_MASK: u8 = 0b0100_0000;
 pub const PALETTE_INDEX_MASK: u8 = 0b0011_1111;
+
+pub type ChunkNumber = (u16, u16);
 
 /// This is the global unique palette. Not the one as in png (palettes in png files are dynamically set)!
 pub const PALETTE: [[u8; 3]; 64] = [
@@ -110,7 +117,7 @@ pub fn initialize_palette_lookup_table() {
 pub fn collect_chunks(
     dir: impl AsRef<Path>,
     tiles_range: Option<TilesRange>,
-) -> anyhow::Result<Vec<(u32, u32)>> {
+) -> anyhow::Result<Vec<ChunkNumber>> {
     let mut collected = Vec::new();
     for x in WalkDir::new(&dir) {
         let entry = x?;
@@ -130,8 +137,8 @@ pub fn collect_chunks(
             continue;
         };
         let (Some(Ok(c1)), Some(Ok(c2))) = (
-            c1.as_os_str().to_str().map(|x| x.parse::<u32>()),
-            c2.as_os_str().to_str().map(|x| x.parse::<u32>()),
+            c1.as_os_str().to_str().map(|x| x.parse()),
+            c2.as_os_str().to_str().map(|x| x.parse()),
         ) else {
             continue;
         };
@@ -319,40 +326,12 @@ pub fn stylized_progress_bar(len: u64) -> ProgressBar {
     pb
 }
 
-pub type ChunkNumber = (u32, u32);
-
-pub fn write_index_file(path: impl AsRef<Path>, chunks: &[ChunkNumber]) -> anyhow::Result<()> {
-    let mut writer = File::create_buffered(path)?;
-    use io::Write;
-    for &(x, y) in chunks {
-        writeln!(&mut writer, "{x},{y}")?;
-    }
-    Ok(())
-}
-
-pub fn read_index_file(path: impl AsRef<Path>) -> anyhow::Result<Vec<ChunkNumber>> {
-    let reader = File::open_buffered(path)?;
-    let mut collected = Vec::new();
-    for x in reader.lines() {
-        match x {
-            Ok(s) if !s.is_empty() => {
-                let mut split = s.split(',');
-                let x = split.next().unwrap().parse::<u32>()?;
-                let y = split.next().iter().next().unwrap().parse::<u32>()?;
-                collected.push((x, y));
-            }
-            _ => continue,
-        }
-    }
-    Ok(collected)
-}
-
 #[derive(Copy, Clone)]
 pub struct TilesRange {
-    pub x_min: u32,
-    pub x_max: u32,
-    pub y_min: u32,
-    pub y_max: u32,
+    pub x_min: u16,
+    pub x_max: u16,
+    pub y_min: u16,
+    pub y_max: u16,
 }
 
 impl TilesRange {
@@ -381,7 +360,18 @@ pub fn new_chunk_file(root: impl AsRef<Path>, (x, y): ChunkNumber, ext: &str) ->
 
 pub fn set_up_logger() {
     if env::var("RUST_LOG").is_err() {
-        unsafe { set_var("RUST_LOG", "info"); }
+        unsafe {
+            set_var("RUST_LOG", "info");
+        }
     }
     env_logger::init();
+}
+
+#[inline(always)]
+pub fn bincode_config() -> Configuration {
+    bincode::config::standard()
+}
+
+pub macro unwrap_os_str($x:expr) {
+    $x.to_str().expect("Invalid UTF-8")
 }

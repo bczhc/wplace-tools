@@ -1,9 +1,9 @@
 use bytesize::ByteSize;
+use log::info;
 use rayon::prelude::*;
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use log::info;
 use wplace_tools::{CHUNK_LENGTH, collect_chunks, read_png, stylized_progress_bar};
 
 fn main() -> anyhow::Result<()> {

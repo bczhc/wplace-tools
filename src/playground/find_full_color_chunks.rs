@@ -15,7 +15,6 @@ use std::path::Path;
 use std::sync::mpsc::channel;
 use wplace_tools::{collect_chunks, stylized_progress_bar};
 
-
 fn main() -> anyhow::Result<()> {
     let mut output = File::create_buffered("output/full-color-chunks.txt")?;
     let (tx, rx) = channel();

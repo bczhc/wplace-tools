@@ -1,16 +1,25 @@
 #![feature(decl_macro)]
+#![feature(file_buffered)]
 
 use crate::cli::Commands;
+use byteorder::{ByteOrder, LE};
 use clap::Parser;
+use flate2::write::DeflateEncoder;
 use flate2::Compression;
-use rayon::prelude::*;
-use std::{env, fs};
-use std::env::set_var;
-use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Write};
-use std::path::Path;
 use log::info;
-use wplace_tools::{CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK, collect_chunks, new_chunk_file, read_index_file, read_png, stylized_progress_bar, write_index_file, write_png, set_up_logger};
+use rayon::prelude::*;
+use std::fs;
+use std::fs::File;
+use std::io::{stdout, BufReader, BufWriter, Read};
+use std::path::Path;
+use std::sync::mpsc::sync_channel;
+use std::thread::spawn;
+use std::time::{SystemTime, UNIX_EPOCH};
+use wplace_tools::diff_file::{DiffFileReader, DiffFileWriter, Metadata};
+use wplace_tools::{
+    collect_chunks, new_chunk_file, read_png, set_up_logger, stylized_progress_bar, unwrap_os_str,
+    write_png, CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK,
+};
 
 mod cli {
     use clap::{Args, Parser, Subcommand, ValueHint};
@@ -96,28 +105,24 @@ fn compare_png(base: impl AsRef<Path>, new: impl AsRef<Path>) -> anyhow::Result<
     Ok(img1 == img2)
 }
 
-/// Returns if the two image data is identical.
+/// Returns None if the two image data is identical.
 #[inline(always)]
-fn diff_png(
-    base: impl AsRef<Path>,
-    new: impl AsRef<Path>,
-    diff_out: impl AsRef<Path>,
-) -> anyhow::Result<bool> {
+fn diff_png(base: impl AsRef<Path>, new: impl AsRef<Path>) -> anyhow::Result<Option<Vec<u8>>> {
     let base = base.as_ref();
     let new = new.as_ref();
 
-    let mut buffers = Buffers::default();
-    let (buf1, buf2, diff_buf) = buffers.split_mut();
+    let buffers = Buffers::default();
+    let (mut buf1, mut buf2, mut diff_buf) = (buffers.b1, buffers.b2, buffers.b3);
 
     if base.exists() {
-        read_png(base, buf1)?;
+        read_png(base, &mut buf1)?;
     }
-    read_png(new, buf2)?;
+    read_png(new, &mut buf2)?;
 
     // It's expecting that a large percent of the chunks are not mutated.
     // Thus in this case, disabling further diff creation can reduce the process time.
     if base.exists() && buf1 == buf2 {
-        return Ok(true);
+        return Ok(None);
     }
 
     for i in 0..CHUNK_LENGTH {
@@ -129,32 +134,24 @@ fn diff_png(
         }
     }
 
-    let out_file = BufWriter::new(File::create(diff_out)?);
-    let mut compressor = flate2::write::DeflateEncoder::new(out_file, Compression::default());
-    compressor.write_all(diff_buf)?;
-
-    Ok(false)
+    Ok(Some(diff_buf))
 }
 
 fn apply_png(
     base: impl AsRef<Path>,
-    diff: impl AsRef<Path>,
     output: impl AsRef<Path>,
+    diff_data: &[u8; CHUNK_LENGTH],
 ) -> anyhow::Result<()> {
-    let mut diff_buf = vec![0_u8; CHUNK_LENGTH];
     let mut base_buf = vec![0_u8; CHUNK_LENGTH];
 
-    let in_reader = BufReader::new(File::open(diff)?);
-    let mut decompressor = flate2::read::DeflateDecoder::new(in_reader);
-    decompressor.read_exact(&mut diff_buf)?;
     if base.as_ref().exists() {
         read_png(base, &mut base_buf)?;
     }
 
     for i in 0..CHUNK_LENGTH {
         // has mutation flag - apply the pixel
-        if diff_buf[i] & MUTATION_MASK == MUTATION_MASK {
-            base_buf[i] = diff_buf[i] & PALETTE_INDEX_MASK;
+        if diff_data[i] & MUTATION_MASK == MUTATION_MASK {
+            base_buf[i] = diff_data[i] & PALETTE_INDEX_MASK;
         }
     }
 
@@ -168,51 +165,77 @@ fn main() -> anyhow::Result<()> {
     let args = cli::Cli::parse();
     match args.command {
         Commands::Diff { base, new, output } => {
-            fs::create_dir_all(&output)?;
             info!("Collecting files...");
             let collected = collect_chunks(&new, None)?;
-            // files that make up a full snapshot
-            let index_file = output.join("index.txt");
-            write_index_file(index_file, &collected)?;
+
+            info!("Creating diff file...");
+            let parent_name = unwrap_os_str!(base.file_name().expect("No filename"));
+            let this_name = unwrap_os_str!(new.file_name().expect("No filename"));
+            let out_stream = BufWriter::new(stdout().lock());
+            let out_stream = DeflateEncoder::new(out_stream, Compression::default());
+            let mut diff_file = DiffFileWriter::new(
+                out_stream,
+                Metadata {
+                    name: this_name.into(),
+                    parent: parent_name.into(),
+                    creation_time: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as u64,
+                },
+                &collected,
+            )?;
+
+            let (tx, rx) = sync_channel(1024);
 
             info!("Processing {} files...", collected.len());
             let progress = stylized_progress_bar(collected.len() as u64);
+            spawn(move || {
+                collected.into_par_iter().for_each_with(tx, |tx, (x, y)| {
+                    let base_file = base.join(format!("{x}/{y}.png"));
+                    let new_file = new.join(format!("{x}/{y}.png"));
 
-            // For some unknown reason, when I use ThreadLocal or even manual unsafe per-thread
-            // object indexing (code commented out below), the performance gets even worse A LOT
-            // compared to the origin
-            // version (allocating memory every time on `diff_png` called). Don't know why.
-
-            // let mut buffers = vec![Buffers::default(); rayon::current_num_threads()];
-            // let buffers_ptr = SharedBuffer(buffers.as_mut_ptr());
-
-            collected.into_par_iter().for_each(|(x, y)| {
-                let base_file = base.join(format!("{x}/{y}.png"));
-                let new_file = new.join(format!("{x}/{y}.png"));
-                let diff_file = new_chunk_file(&output, (x, y), "bin");
-
-                // let buffers_ptr_ref = buffers_ptr;
-
-                // let local_buffers = unsafe {
-                //     &mut *buffers_ptr_ref
-                //         .0
-                //         .add(rayon::current_thread_index().unwrap())
-                // };
-
-                let _ = diff_png(base_file, new_file, diff_file).unwrap();
-                progress.inc(1);
+                    let diff_buffer = diff_png(base_file, new_file).unwrap();
+                    if let Some(b) = diff_buffer {
+                        tx.send((x, y, b)).unwrap();
+                    }
+                    progress.inc(1);
+                });
+                progress.finish();
             });
 
-            progress.finish();
+            for (x, y, diff) in rx {
+                diff_file.add_chunk_diff((x, y), &diff)?;
+            }
         }
         Commands::Apply { base, diff, output } => {
-            fs::create_dir_all(&output)?;
-            info!("Collecting files...");
-            let index = read_index_file(diff.join("index.txt"))?;
+            info!("Opening diff file...");
+            let diff_file = DiffFileReader::new(File::open_buffered(&diff)?)?;
+            let index = &diff_file.index;
+            info!(
+                "Total chunks: {}, parent: {}, this: {}, creation time: {}",
+                index.len(),
+                diff_file.metadata.parent,
+                diff_file.metadata.name,
+                diff_file.metadata.creation_time
+            );
+
             info!("Processing {} files...", index.len());
             let progress = stylized_progress_bar(index.len() as u64);
 
-            index.into_par_iter().for_each(|(x, y)| {
+            let iter = diff_file.chunk_diff_iter()?;
+            for x in iter {
+                let x = x?;
+                let chunk_x = LE::read_u16(&x[0..2]);
+                let chunk_y = LE::read_u16(&x[2..4]);
+                let diff_data = &x[4..];
+                let base_file = base.join(format!("{chunk_x}/{chunk_y}.png"));
+                let output_file = new_chunk_file(&output, (chunk_x, chunk_y), "png");
+                apply_png(base_file, output_file, diff_data.try_into().unwrap())?;
+            }
+            progress.finish();
+
+            /*index.into_par_iter().for_each(|(x, y)| {
                 let base_file = base.join(format!("{x}/{y}.png"));
                 let diff_file = diff.join(format!("{x}/{y}.bin"));
                 let output_file = new_chunk_file(&output, (x, y), "png");
@@ -225,7 +248,7 @@ fn main() -> anyhow::Result<()> {
                     fs::copy(&base_file, &output_file).unwrap();
                 }
                 progress.inc(1);
-            });
+            });*/
 
             progress.finish();
         }
