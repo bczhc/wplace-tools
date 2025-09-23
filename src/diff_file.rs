@@ -1,6 +1,14 @@
-//! Diff file format:
+//! Standalone diff file that contains all the chunk changes.
 //!
-//! \[Magic | Metadata | ArchiveIndex | ChunkDiff 1 | ChunkDiff 2 | ... | ChunkDiff N \]
+//! ## File Format
+//!
+//! \[ Magic | Metadata | ArchiveIndex | ChunkDiff 1 | ChunkDiff 2 | ... | ChunkDiff N \]
+//!
+//! ## ChunkDiff Format
+//!
+//! \[ chunk_x (u16) | chunk_y (u16) | diff_data (\[u8; 1_000_000\]) \]
+//!
+//! All integer serializations are in little-endian.
 
 use crate::{CHUNK_LENGTH, ChunkNumber};
 use byteorder::{LE, ReadBytesExt, WriteBytesExt};
@@ -13,6 +21,11 @@ use yeet_ops::yeet;
 
 pub const MAGIC: [u8; 11] = *b"wplace-diff";
 
+/// Metadata of a diff file.
+///
+/// ## Serialization format
+///
+/// \[ diff_count (u32) | name_length (u32) | name (var-length) | parent_length (u32) | name (var-length) | creation_time (u64) \]
 pub struct Metadata {
     /// Number of chunks changed
     pub diff_count: u32,
@@ -38,11 +51,8 @@ where
         archive_index: impl Into<Vec<ChunkNumber>>,
     ) -> anyhow::Result<Self> {
         writer.write_all(&MAGIC)?;
-        println!("{:?}", writer.stream_position());
         metadata.write_to(&mut writer)?;
-        println!("{:?}", writer.stream_position());
-        ChunkNumbers(archive_index.into()).write_to(&mut writer)?;
-        println!("{:?}", writer.stream_position());
+        ArchiveIndex(archive_index.into()).write_to(&mut writer)?;
 
         // all chunk diffs are compressed
         let compressor = DoubleCompressor::new(writer);
@@ -77,7 +87,7 @@ pub struct DiffFileReader<R: Read> {
 
 impl<R> DiffFileReader<R>
 where
-    R: Read + Send + 'static + Seek,
+    R: Read + Send + 'static,
 {
     pub fn new(mut reader: R) -> anyhow::Result<Self> {
         let mut magic_buf = [0_u8; MAGIC.len()];
@@ -87,9 +97,7 @@ where
         }
 
         let metadata = Metadata::read_from(&mut reader)?;
-        let index: Vec<ChunkNumber> = ChunkNumbers::read_from(&mut reader)?.0;
-
-        println!("{:?}", reader.stream_position());
+        let index: Vec<ChunkNumber> = ArchiveIndex::read_from(&mut reader)?.0;
 
         let reader = DoubleDecompressor::new(reader);
         Ok(Self {
@@ -224,9 +232,16 @@ impl ReadFrom for String {
     }
 }
 
-struct ChunkNumbers(Vec<ChunkNumber>);
+/// ## Serialization format
+///
+/// \[ chunks_count (u32) | compressed_data_length (u32) | compressed_data (var-length) \]
+///
+/// ## Compressed data format
+///
+/// \[ chunk0_x (u16) | chunk0_y (u16) | chunk1_x (u16) | chunk1_y (u16) | ... | chunkN_x (u16) | chunkN_y (u16) \]
+struct ArchiveIndex(Vec<ChunkNumber>);
 
-impl WriteTo for ChunkNumbers {
+impl WriteTo for ArchiveIndex {
     fn write_to(&self, mut w: impl Write) -> io::Result<()> {
         let mut compressed = Cursor::new(Vec::new());
         let mut compressor = write::DeflateEncoder::new(&mut compressed, Compression::default());
@@ -243,7 +258,7 @@ impl WriteTo for ChunkNumbers {
     }
 }
 
-impl ReadFrom for ChunkNumbers {
+impl ReadFrom for ArchiveIndex {
     fn read_from(mut r: impl Read) -> io::Result<Self> {
         let length = r.read_u32::<LE>()?;
         let compressed_data_length = r.read_u32::<LE>()?;
