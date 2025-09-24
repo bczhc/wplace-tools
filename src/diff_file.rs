@@ -10,9 +10,9 @@
 //!   | chunk1_x (u16) | chunk2_y (u16) | diff_data (\[u8; 1_000_000\])
 //!   | ...
 //!   | chunkN_x (u16) | chunkN_y (u16) | diff_data (\[u8; 1_000_000\]) \]
-//! 
+//!
 //! ## Synopsis
-//! 
+//!
 //! ```text
 //! File Format
 //! └── [ Magic ]
@@ -49,12 +49,12 @@
 //!
 //! All integer serializations are in little-endian.
 
-use crate::{CHUNK_LENGTH, ChunkNumber};
-use byteorder::{LE, ReadBytesExt, WriteBytesExt};
-use flate2::{Compression, read, write};
+use crate::{ChunkNumber, CHUNK_LENGTH};
+use byteorder::{ReadBytesExt, WriteBytesExt, LE};
+use flate2::{read, write, Compression};
 use std::io;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
-use std::sync::mpsc::{Receiver, sync_channel};
+use std::sync::mpsc::{sync_channel, Receiver};
 use std::thread::spawn;
 use yeet_ops::yeet;
 
@@ -77,7 +77,7 @@ const DIFF_COUNT_OFFSET: u64 = MAGIC.len() as u64;
 
 /// An assembled diff file that saves all the chunk changes.
 pub struct DiffFileWriter<W: Write + Seek> {
-    compressor: DoubleCompressor<W>,
+    compressor: write::DeflateEncoder<W>,
 }
 
 impl<W> DiffFileWriter<W>
@@ -93,17 +93,16 @@ where
         metadata.write_to(&mut writer)?;
         ArchiveIndex(archive_index.into()).write_to(&mut writer)?;
 
-        // all chunk diffs are compressed
-        let compressor = DoubleCompressor::new(writer);
+        let compressor = write::DeflateEncoder::new(writer, Compression::default());
         Ok(Self { compressor })
     }
 
     #[inline(always)]
     /// This is only safe in a single thread.
     pub fn add_chunk_diff(&mut self, n: ChunkNumber, data: &[u8]) -> anyhow::Result<()> {
-        assert_eq!(data.len(), CHUNK_LENGTH);
         self.compressor.write_u16::<LE>(n.0)?;
         self.compressor.write_u16::<LE>(n.1)?;
+        self.compressor.write_u32::<LE>(data.len() as u32)?;
         self.compressor.write_all(data)?;
         Ok(())
     }
@@ -119,7 +118,7 @@ where
 const CHUNK_DIFF_SIZE: usize = 2 /* size of ChunkNumber a.k.a. u16 */ + 2 + CHUNK_LENGTH;
 
 pub struct DiffFileReader<R: Read> {
-    decompressor: DoubleDecompressor<R>,
+    decompressor: read::DeflateDecoder<R>,
     pub index: Vec<ChunkNumber>,
     pub metadata: Metadata,
 }
@@ -138,7 +137,7 @@ where
         let metadata = Metadata::read_from(&mut reader)?;
         let index: Vec<ChunkNumber> = ArchiveIndex::read_from(&mut reader)?.0;
 
-        let reader = DoubleDecompressor::new(reader);
+        let reader = read::DeflateDecoder::new(reader);
         Ok(Self {
             decompressor: reader,
             metadata,
@@ -146,75 +145,30 @@ where
         })
     }
 
-    pub fn chunk_diff_iter(self) -> anyhow::Result<Receiver<io::Result<Vec<u8>>>> {
-        let (tx, rx) = sync_channel(8192);
+    pub fn chunk_diff_iter(self) -> anyhow::Result<Receiver<io::Result<(u16, u16, Vec<u8>)>>> {
+        let (tx, rx) = sync_channel(1024);
 
         spawn(move || {
             let mut reader = self.decompressor;
             for _ in 0..self.metadata.diff_count {
-                let mut buf = vec![0_u8; CHUNK_DIFF_SIZE];
-                let result = reader.read_exact(&mut buf);
+                let result: io::Result<_> = try {
+                    let x = reader.read_u16::<LE>()?;
+                    let y = reader.read_u16::<LE>()?;
+                    let data_len = reader.read_u32::<LE>()?;
+                    let mut buf = vec![0_u8; data_len as usize];
+                    reader.read_exact(&mut buf)?;
+                    (x, y, buf)
+                };
                 match result {
-                    Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                        break;
-                    }
                     Err(e) => tx.send(Err(e)).unwrap(),
-                    Ok(()) => {
-                        tx.send(Ok(buf)).unwrap();
+                    Ok(x) => {
+                        tx.send(Ok(x)).unwrap();
                     }
                 }
             }
         });
 
         Ok(rx)
-    }
-}
-
-struct DoubleCompressor<W: Write> {
-    inner: write::DeflateEncoder<write::DeflateEncoder<W>>,
-}
-
-impl<W: Write> DoubleCompressor<W> {
-    #[inline(always)]
-    pub fn new(writer: W) -> Self {
-        let compressor = write::DeflateEncoder::new(writer, Compression::default());
-        let compressor = write::DeflateEncoder::new(compressor, Compression::default());
-        Self { inner: compressor }
-    }
-
-    pub fn finish(self) -> io::Result<W> {
-        self.inner.finish()?.finish()
-    }
-}
-
-impl<W: Write> Write for DoubleCompressor<W> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.inner.write(buf)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.flush()
-    }
-}
-
-struct DoubleDecompressor<R: Read> {
-    inner: read::DeflateDecoder<read::DeflateDecoder<R>>,
-}
-
-impl<R: Read> DoubleDecompressor<R> {
-    #[inline(always)]
-    pub fn new(reader: R) -> Self {
-        let decompressor = read::DeflateDecoder::new(reader);
-        let decompressor = read::DeflateDecoder::new(decompressor);
-        Self {
-            inner: decompressor,
-        }
-    }
-}
-
-impl<R: Read> Read for DoubleDecompressor<R> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.inner.read(buf)
     }
 }
 

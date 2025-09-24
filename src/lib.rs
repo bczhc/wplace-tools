@@ -1,6 +1,7 @@
 #![feature(file_buffered)]
 #![feature(yeet_expr)]
 #![feature(decl_macro)]
+#![feature(try_blocks)]
 
 pub mod diff_file;
 

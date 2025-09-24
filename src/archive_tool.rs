@@ -1,24 +1,28 @@
 #![feature(decl_macro)]
 #![feature(file_buffered)]
+#![feature(likely_unlikely)]
 
 use crate::cli::Commands;
 use byteorder::{ByteOrder, LE};
 use chrono::{Local, TimeZone};
 use clap::Parser;
+use flate2::{read, write, Compression};
 use log::info;
 use rayon::prelude::*;
+use std::cell::RefCell;
 use std::collections::HashSet;
-use std::fs;
 use std::fs::File;
+use std::io::{Cursor, Seek, Write};
 use std::path::Path;
-use std::sync::mpsc::sync_channel;
+use std::sync::mpsc::{channel, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::spawn;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::{fs, hint};
 use wplace_tools::diff_file::{DiffFileReader, DiffFileWriter, Metadata};
 use wplace_tools::{
-    CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK, collect_chunks, new_chunk_file, read_png,
-    set_up_logger, stylized_progress_bar, unwrap_os_str, write_png,
+    collect_chunks, new_chunk_file, read_png, set_up_logger, stylized_progress_bar, unwrap_os_str,
+    write_png, CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK,
 };
 
 mod cli {
@@ -105,19 +109,19 @@ fn compare_png(base: impl AsRef<Path>, new: impl AsRef<Path>) -> anyhow::Result<
     Ok(img1 == img2)
 }
 
-/// Returns None if the two image data is identical.
+/// Returns compressed diff between two images. None is for identical images.
 #[inline(always)]
 fn diff_png(base: impl AsRef<Path>, new: impl AsRef<Path>) -> anyhow::Result<Option<Vec<u8>>> {
     let base = base.as_ref();
     let new = new.as_ref();
 
-    let buffers = Buffers::default();
-    let (mut buf1, mut buf2, mut diff_buf) = (buffers.b1, buffers.b2, buffers.b3);
+    let mut buf = vec![0_u8; CHUNK_LENGTH * 2];
+    let (buf1, buf2) = buf.split_at_mut(CHUNK_LENGTH);
 
     if base.exists() {
-        read_png(base, &mut buf1)?;
+        read_png(base, buf1)?;
     }
-    read_png(new, &mut buf2)?;
+    read_png(new, buf2)?;
 
     // It's expecting that a large percent of the chunks are not mutated.
     // Thus in this case, disabling further diff creation can reduce the process time.
@@ -125,16 +129,20 @@ fn diff_png(base: impl AsRef<Path>, new: impl AsRef<Path>) -> anyhow::Result<Opt
         return Ok(None);
     }
 
-    for i in 0..CHUNK_LENGTH {
-        // They shouldn't have two highest ones. Coerce them.
-        let i1 = buf1[i] & PALETTE_INDEX_MASK;
-        let i2 = buf2[i] & PALETTE_INDEX_MASK;
-        if i1 != i2 {
-            diff_buf[i] = i2 | MUTATION_MASK;
+    for x in buf1.iter_mut().zip(buf2) {
+        let i1 = *x.0 & PALETTE_INDEX_MASK;
+        let i2 = *x.1 & PALETTE_INDEX_MASK;
+        if hint::likely(i1 == i2) {
+            *x.0 = 0;
+        } else {
+            *x.0 = i2 | MUTATION_MASK;
         }
     }
 
-    Ok(Some(diff_buf))
+    let mut compressor = write::DeflateEncoder::new(Cursor::new(Vec::new()), Compression::default());
+    compressor.write_all(buf1)?;
+    let data = compressor.finish()?.into_inner();
+    Ok(Some(data))
 }
 
 fn apply_png(
@@ -158,6 +166,10 @@ fn apply_png(
     write_png(output, &base_buf)?;
 
     Ok(())
+}
+
+thread_local! {
+    static COMPRESSOR_BUF: RefCell<Vec<u8>> = RefCell::new(Vec::new());
 }
 
 fn main() -> anyhow::Result<()> {
@@ -234,12 +246,23 @@ fn main() -> anyhow::Result<()> {
             let iter = diff_file.chunk_diff_iter()?;
             iter.into_iter().par_bridge().for_each(|x| {
                 let x = x.unwrap();
-                let chunk_x = LE::read_u16(&x[0..2]);
-                let chunk_y = LE::read_u16(&x[2..4]);
-                let diff_data = &x[4..];
+                let chunk_x = x.0;
+                let chunk_y = x.1;
+                let mut raw_diff: Vec<u8> = Vec::with_capacity(CHUNK_LENGTH);
+                let mut decompressor = write::DeflateDecoder::new(&mut raw_diff);
+                decompressor.write_all(&x.2).unwrap();
+                decompressor.finish().unwrap();
+
                 let base_file = base.join(format!("{chunk_x}/{chunk_y}.png"));
                 let output_file = new_chunk_file(&output, (chunk_x, chunk_y), "png");
-                apply_png(base_file, output_file, diff_data.try_into().unwrap()).unwrap();
+                apply_png(
+                    base_file,
+                    output_file,
+                    &raw_diff
+                        .try_into()
+                        .expect("Raw diff data length is expected to be 1_000_000"),
+                )
+                .unwrap();
                 changed_chunks.lock().unwrap().insert((chunk_x, chunk_y));
                 progress.inc(1);
             });
