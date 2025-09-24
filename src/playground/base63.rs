@@ -1,13 +1,12 @@
 #![feature(file_buffered)]
 
+use clap::Parser;
+use num_bigint::BigUint;
+use num_integer::Roots;
 use std::fs::File;
 use std::io::{BufReader, Read, Write};
 use std::path::PathBuf;
-use clap::{Parser, Subcommand};
-use num_bigint::BigUint;
-use num_integer::{sqrt, Integer, Roots};
-use num_traits::{ToPrimitive, Zero};
-use wplace_tools::{read_png, write_chunk_png, write_png};
+use wplace_tools::indexed_png::{read_png, write_png};
 
 /// Base63 with Wplace palette.
 #[derive(Parser, Debug)]
@@ -44,7 +43,6 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-
     Ok(())
 }
 
@@ -59,7 +57,7 @@ fn encode(data: &[u8]) -> Vec<u8> {
 }
 
 fn decode(data: &[u8]) -> Vec<u8> {
-    let mut data =data.to_vec();
+    let mut data = data.to_vec();
     for x in data.iter_mut() {
         // shift by one because PALETTE[0] is defined as transparency
         *x -= 1;

@@ -3,26 +3,26 @@
 #![feature(likely_unlikely)]
 
 use crate::cli::Commands;
-use byteorder::{ByteOrder, LE};
 use chrono::{Local, TimeZone};
 use clap::Parser;
-use flate2::{read, write, Compression};
+use flate2::{Compression, write};
 use log::info;
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{Cursor, Seek, Write};
+use std::io::{Cursor, Write};
 use std::path::Path;
-use std::sync::mpsc::{channel, sync_channel};
+use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
 use std::thread::spawn;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, hint};
 use wplace_tools::diff_file::{DiffFileReader, DiffFileWriter, Metadata};
+use wplace_tools::indexed_png::{read_png, write_chunk_png};
 use wplace_tools::{
-    collect_chunks, new_chunk_file, read_png, set_up_logger, stylized_progress_bar, unwrap_os_str,
-    write_chunk_png, CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK,
+    CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK, collect_chunks, new_chunk_file, set_up_logger,
+    stylized_progress_bar, unwrap_os_str,
 };
 
 mod cli {
@@ -139,7 +139,8 @@ fn diff_png(base: impl AsRef<Path>, new: impl AsRef<Path>) -> anyhow::Result<Opt
         }
     }
 
-    let mut compressor = write::DeflateEncoder::new(Cursor::new(Vec::new()), Compression::default());
+    let mut compressor =
+        write::DeflateEncoder::new(Cursor::new(Vec::new()), Compression::default());
     compressor.write_all(buf1)?;
     let data = compressor.finish()?.into_inner();
     Ok(Some(data))
@@ -169,7 +170,7 @@ fn apply_png(
 }
 
 thread_local! {
-    static COMPRESSOR_BUF: RefCell<Vec<u8>> = RefCell::new(Vec::new());
+    static COMPRESSOR_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
 fn main() -> anyhow::Result<()> {

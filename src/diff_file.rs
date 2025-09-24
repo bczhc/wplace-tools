@@ -54,12 +54,12 @@
 //!
 //! All integer serializations are in little-endian. All compressions are using `flate2::*::Deflate(Encoder|Decoder)`.
 
-use crate::{ChunkNumber, CHUNK_LENGTH};
-use byteorder::{ReadBytesExt, WriteBytesExt, LE};
-use flate2::{read, write, Compression};
+use crate::{CHUNK_LENGTH, ChunkNumber};
+use byteorder::{LE, ReadBytesExt, WriteBytesExt};
+use flate2::{Compression, read, write};
 use std::io;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
-use std::sync::mpsc::{sync_channel, Receiver};
+use std::sync::mpsc::{Receiver, sync_channel};
 use std::thread::spawn;
 use yeet_ops::yeet;
 

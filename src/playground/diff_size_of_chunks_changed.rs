@@ -4,7 +4,8 @@ use rayon::prelude::*;
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use wplace_tools::{CHUNK_LENGTH, collect_chunks, read_png, stylized_progress_bar};
+use wplace_tools::indexed_png::read_png;
+use wplace_tools::{CHUNK_LENGTH, collect_chunks, stylized_progress_bar};
 
 fn main() -> anyhow::Result<()> {
     // let range = TilesRange::parse_str("501,619,1019,1034").unwrap();
