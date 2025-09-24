@@ -19,6 +19,9 @@ log = "0.4.28"
 byteorder = "1.5.0"
 yeet-ops = "1.0.0"
 chrono = "0.4.42"
+num-bigint = "0.4.6"
+num-integer = "0.1.46"
+num-traits = "0.2.19"
 
 [[bin]]
 name = "archive-tool"
@@ -31,3 +34,7 @@ path = "src/playground/find_full_color_chunks.rs"
 [[bin]]
 name = "diff-size-of-chunks-changed"
 path = "src/playground/diff_size_of_chunks_changed.rs"
+
+[[bin]]
+name = "base63"
+path = "src/playground/base63.rs"

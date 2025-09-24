@@ -22,7 +22,7 @@ use std::{fs, hint};
 use wplace_tools::diff_file::{DiffFileReader, DiffFileWriter, Metadata};
 use wplace_tools::{
     collect_chunks, new_chunk_file, read_png, set_up_logger, stylized_progress_bar, unwrap_os_str,
-    write_png, CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK,
+    write_chunk_png, CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK,
 };
 
 mod cli {
@@ -163,7 +163,7 @@ fn apply_png(
         }
     }
 
-    write_png(output, &base_buf)?;
+    write_chunk_png(output, &base_buf)?;
 
     Ok(())
 }

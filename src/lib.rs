@@ -94,6 +94,14 @@ pub const PALETTE: [[u8; 3]; 64] = [
     [179, 185, 209],
 ];
 
+static PALETTE_DATA_IN_PNG: Lazy<[u8; 64 * 3]> = Lazy::new(|| {
+    let mut palette_buf = Cursor::new([0_u8; 64 * 3]);
+    for x in PALETTE {
+        palette_buf.write_all(&x).unwrap();
+    }
+    palette_buf.into_inner()
+});
+
 /// This is used as a hashing algorithm.
 const fn pack_rgb(rgb: &[u8]) -> u32 {
     ((rgb[0] as u32) << 16) | ((rgb[1] as u32) << 8) | (rgb[2] as u32)
@@ -231,57 +239,53 @@ impl PixelMapper {
     }
 }
 
-pub fn read_png(path: impl AsRef<Path>, buf: &mut [u8]) -> anyhow::Result<()> {
+pub fn read_png(path: impl AsRef<Path>, index_buf: &mut [u8]) -> anyhow::Result<()> {
     let png = png::Decoder::new(BufReader::new(File::open(&path)?));
     let mut reader = png.read_info()?;
     let png_buf_size = reader
         .output_buffer_size()
         .ok_or(anyhow!("Cannot read output buffer size"))?;
-    reader.next_frame(buf)?;
+    reader.next_frame(index_buf)?;
 
     let info = reader.info();
     let pixel_mapper = PixelMapper::new(info);
 
     match info.bit_depth {
         BitDepth::One => {
-            debug_assert_eq!(png_buf_size, CHUNK_LENGTH / 8);
             for i in (0..png_buf_size).rev() {
-                let byte = buf[i];
+                let byte = index_buf[i];
                 let base = i * 8;
-                buf[base + 7] = pixel_mapper.map(byte & 1);
-                buf[base + 6] = pixel_mapper.map((byte >> 1) & 1);
-                buf[base + 5] = pixel_mapper.map((byte >> 2) & 1);
-                buf[base + 4] = pixel_mapper.map((byte >> 3) & 1);
-                buf[base + 3] = pixel_mapper.map((byte >> 4) & 1);
-                buf[base + 2] = pixel_mapper.map((byte >> 5) & 1);
-                buf[base + 1] = pixel_mapper.map((byte >> 6) & 1);
-                buf[base] = pixel_mapper.map((byte >> 7) & 1);
+                index_buf[base + 7] = pixel_mapper.map(byte & 1);
+                index_buf[base + 6] = pixel_mapper.map((byte >> 1) & 1);
+                index_buf[base + 5] = pixel_mapper.map((byte >> 2) & 1);
+                index_buf[base + 4] = pixel_mapper.map((byte >> 3) & 1);
+                index_buf[base + 3] = pixel_mapper.map((byte >> 4) & 1);
+                index_buf[base + 2] = pixel_mapper.map((byte >> 5) & 1);
+                index_buf[base + 1] = pixel_mapper.map((byte >> 6) & 1);
+                index_buf[base] = pixel_mapper.map((byte >> 7) & 1);
             }
         }
         BitDepth::Two => {
-            debug_assert_eq!(png_buf_size, CHUNK_LENGTH / 4);
             for i in (0..png_buf_size).rev() {
-                let byte = buf[i];
+                let byte = index_buf[i];
 
-                buf[i * 4 + 3] = pixel_mapper.map(byte & 0b11);
-                buf[i * 4 + 2] = pixel_mapper.map((byte >> 2) & 0b11);
-                buf[i * 4 + 1] = pixel_mapper.map((byte >> 4) & 0b11);
-                buf[i * 4] = pixel_mapper.map((byte >> 6) & 0b11);
+                index_buf[i * 4 + 3] = pixel_mapper.map(byte & 0b11);
+                index_buf[i * 4 + 2] = pixel_mapper.map((byte >> 2) & 0b11);
+                index_buf[i * 4 + 1] = pixel_mapper.map((byte >> 4) & 0b11);
+                index_buf[i * 4] = pixel_mapper.map((byte >> 6) & 0b11);
             }
         }
         BitDepth::Four => {
-            debug_assert_eq!(png_buf_size, CHUNK_LENGTH / 2);
             for i in (0..png_buf_size).rev() {
-                let byte = buf[i];
+                let byte = index_buf[i];
                 let base = i * 2;
-                buf[base + 1] = pixel_mapper.map(byte & 0b1111);
-                buf[base] = pixel_mapper.map((byte >> 4) & 0b1111);
+                index_buf[base + 1] = pixel_mapper.map(byte & 0b1111);
+                index_buf[base] = pixel_mapper.map((byte >> 4) & 0b1111);
             }
         }
         BitDepth::Eight => {
-            debug_assert_eq!(png_buf_size, CHUNK_LENGTH);
-            for i in (0..buf.len()).rev() {
-                buf[i] = pixel_mapper.map(buf[i]);
+            for i in (0..index_buf.len()).rev() {
+                index_buf[i] = pixel_mapper.map(index_buf[i]);
             }
         }
         BitDepth::Sixteen => {
@@ -293,19 +297,15 @@ pub fn read_png(path: impl AsRef<Path>, buf: &mut [u8]) -> anyhow::Result<()> {
 }
 
 #[inline(always)]
-pub fn write_png(path: impl AsRef<Path>, buf: &[u8]) -> anyhow::Result<()> {
+pub fn write_chunk_png(path: impl AsRef<Path>, buf: &[u8]) -> anyhow::Result<()> {
+    // TODO: PNG_INFO: benchmarks between `Lazy` and stack allocation
     static PNG_INFO: Lazy<Info> = Lazy::new(|| {
-        let mut palette_buf = Cursor::new([0_u8; 64 * 3]);
-        for x in PALETTE {
-            palette_buf.write_all(&x).unwrap();
-        }
-
         let mut new_info = Info::with_size(1000, 1000);
         new_info.bit_depth = BitDepth::Eight;
         new_info.color_type = ColorType::Indexed;
         // png palette #0 is transparency
         new_info.trns = Some(Cow::from(&[0_u8]));
-        new_info.palette = Some(Cow::Owned(palette_buf.get_ref().to_vec()));
+        new_info.palette = Some(Cow::Owned(PALETTE_DATA_IN_PNG.to_vec()));
         new_info
     });
 
@@ -313,6 +313,25 @@ pub fn write_png(path: impl AsRef<Path>, buf: &[u8]) -> anyhow::Result<()> {
     let encoder = png::Encoder::with_info(writer, PNG_INFO.clone())?;
     let mut writer = encoder.write_header()?;
     writer.write_image_data(buf)?;
+    Ok(())
+}
+
+pub fn write_png(
+    path: impl AsRef<Path>,
+    dimension: (u32, u32),
+    index_data: &[u8],
+) -> anyhow::Result<()> {
+    let mut new_info = Info::with_size(dimension.0, dimension.1);
+    new_info.bit_depth = BitDepth::Eight;
+    new_info.color_type = ColorType::Indexed;
+    // png palette #0 is transparency
+    new_info.trns = Some(Cow::from(&[0_u8]));
+    new_info.palette = Some(Cow::Owned(PALETTE_DATA_IN_PNG.to_vec()));
+
+    let writer = File::create_buffered(path)?;
+    let encoder = png::Encoder::with_info(writer, new_info)?;
+    let mut writer=encoder.write_header()?;
+    writer.write_image_data(index_data)?;
     Ok(())
 }
 
