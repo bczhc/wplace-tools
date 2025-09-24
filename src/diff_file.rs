@@ -6,10 +6,12 @@
 //!
 //! **diff stream:**
 //!
-//!   \[ chunk0_x (u16) | chunk1_y (u16) | diff_data (\[u8; 1_000_000\])
-//!   | chunk1_x (u16) | chunk2_y (u16) | diff_data (\[u8; 1_000_000\])
+//!   \[ chunk0_x (u16) | chunk1_y (u16) | diff_data_length (u32) | diff_data (\[u8; diff_data_length\])
+//!   | chunk1_x (u16) | chunk2_y (u16) | diff_data_length (u32) | diff_data (\[u8; diff_data_length\])
 //!   | ...
-//!   | chunkN_x (u16) | chunkN_y (u16) | diff_data (\[u8; 1_000_000\]) \]
+//!   | chunkN_x (u16) | chunkN_y (u16) | diff_data_length (u32) | diff_data (\[u8; diff_data_length\]) \]
+//!
+//! `diff_data` then is also compressed. It expands to: `[0_u8; 1_000_000]`.
 //!
 //! ## Synopsis
 //!
@@ -37,17 +39,20 @@
 //! └── [ Compressed diff stream ]
 //!     ├── chunk0_x : u16
 //!     ├── chunk1_y : u16
-//!     ├── diff_data : [u8; 1_000_000]
+//!     ├── diff_data_length : u32
+//!     ├── diff_data : [u8; diff_daa_length]
 //!     ├── chunk1_x : u16
 //!     ├── chunk2_y : u16
-//!     ├── diff_data : [u8; 1_000_000]
+//!     ├── diff_data_length : u32
+//!     ├── diff_data : [u8; diff_data_length]
 //!     ├── ...
 //!     ├── chunkN_x : u16
 //!     ├── chunkN_y : u16
-//!     └── diff_data : [u8; 1_000_000]
+//!     ├── diff_data_length : u32
+//!     └── diff_data : [u8; diff_data_length]
 //! ```
 //!
-//! All integer serializations are in little-endian.
+//! All integer serializations are in little-endian. All compressions are using `flate2::*::Deflate(Encoder|Decoder)`.
 
 use crate::{ChunkNumber, CHUNK_LENGTH};
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
