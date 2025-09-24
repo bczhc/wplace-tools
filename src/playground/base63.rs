@@ -26,8 +26,12 @@ fn main() -> anyhow::Result<()> {
             // encode
             let mut input_data = Vec::new();
             File::open_buffered(&args.input)?.read_to_end(&mut input_data)?;
-            let image_data = encode(&input_data);
+            let mut image_data = encode(&input_data);
             let dimension = image_dimension(image_data.len() as u32);
+            for _ in 0..(dimension.0 * dimension.1 - image_data.len() as u32) {
+                // padding zeros (transparency)
+                image_data.push(0);
+            }
             write_png(args.output, dimension, &image_data)?;
         }
         true => {
@@ -56,8 +60,15 @@ fn encode(data: &[u8]) -> Vec<u8> {
     indices
 }
 
-fn decode(data: &[u8]) -> Vec<u8> {
-    let mut data = data.to_vec();
+fn decode(image_index_data: &[u8]) -> Vec<u8> {
+    let mut data = image_index_data.to_vec();
+    // transparency pixels are not expected (except the trailing padding)
+    // so truncate the input data to the transparency (if present)
+    if let Some(i) = data.iter().position(|x| *x == 0) {
+        data.truncate(i);
+    }
+
+
     for x in data.iter_mut() {
         // shift by one because PALETTE[0] is defined as transparency
         *x -= 1;
