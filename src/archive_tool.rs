@@ -5,7 +5,7 @@
 use crate::cli::Commands;
 use chrono::{Local, TimeZone};
 use clap::Parser;
-use flate2::{write, Compression};
+use flate2::{Compression, write};
 use log::{error, info};
 use rayon::prelude::*;
 use std::cell::RefCell;
@@ -22,8 +22,8 @@ use wplace_tools::checksum::Checksum;
 use wplace_tools::diff_file::{DiffFileReader, DiffFileWriter, Metadata};
 use wplace_tools::indexed_png::{read_png, write_chunk_png};
 use wplace_tools::{
-    collect_chunks, new_chunk_file, set_up_logger, stylized_progress_bar, unwrap_os_str, ChunkNumber,
-    CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK,
+    CHUNK_LENGTH, ChunkNumber, MUTATION_MASK, PALETTE_INDEX_MASK, collect_chunks, new_chunk_file,
+    set_up_logger, stylized_progress_bar, unwrap_os_str,
 };
 
 mod cli {
@@ -262,14 +262,14 @@ fn main() -> anyhow::Result<()> {
             info!("Applying diff to {} chunks...", metadata.diff_count);
             let progress = stylized_progress_bar(metadata.diff_count as u64);
 
-            let iter = diff_file.chunk_diff_iter()?;
+            let iter = diff_file.chunk_diff_iter();
             iter.into_iter().par_bridge().for_each(|x| {
                 let x = x.unwrap();
-                let chunk_x = x.0;
-                let chunk_y = x.1;
+                let chunk_x = x.0.0;
+                let chunk_y = x.0.1;
                 let mut raw_diff: Vec<u8> = Vec::with_capacity(CHUNK_LENGTH);
                 let mut decompressor = write::DeflateDecoder::new(&mut raw_diff);
-                decompressor.write_all(&x.2).unwrap();
+                decompressor.write_all(&x.1).unwrap();
                 decompressor.finish().unwrap();
 
                 let base_file = base.join(format!("{chunk_x}/{chunk_y}.png"));
@@ -387,17 +387,14 @@ fn checksum_with_progress(chunks: &[ChunkNumber], archive_path: impl AsRef<Path>
     let archive_path = archive_path.as_ref();
 
     let checksum = Arc::new(Mutex::new(Checksum::new()));
-    chunks
-        .into_iter()
-        .par_bridge()
-        .for_each_with(Arc::clone(&checksum), |c, &(x, y)| {
-            let chunk_file = archive_path.join(format!("{x}/{y}.png"));
-            let mut chunk_buf = vec![0_u8; CHUNK_LENGTH];
-            read_png(chunk_file, &mut chunk_buf).unwrap();
-            checksum.lock().unwrap().add_chunk((x, y), &chunk_buf);
+    chunks.iter().par_bridge().for_each(|&(x, y)| {
+        let chunk_file = archive_path.join(format!("{x}/{y}.png"));
+        let mut chunk_buf = vec![0_u8; CHUNK_LENGTH];
+        read_png(chunk_file, &mut chunk_buf).unwrap();
+        checksum.lock().unwrap().add_chunk((x, y), &chunk_buf);
 
-            progress.inc(1);
-        });
+        progress.inc(1);
+    });
     progress.finish();
     Arc::try_unwrap(checksum)
         .ok()
@@ -426,35 +423,3 @@ Checksum: {}",
         blake3::Hash::from_bytes(meta.checksum)
     )
 }
-
-#[derive(Clone)]
-struct Buffers {
-    b1: Vec<u8>,
-    b2: Vec<u8>,
-    b3: Vec<u8>,
-}
-
-impl Buffers {
-    #[inline(always)]
-    fn split_mut(&mut self) -> (&mut Vec<u8>, &mut Vec<u8>, &mut Vec<u8>) {
-        (&mut self.b1, &mut self.b2, &mut self.b3)
-    }
-}
-
-impl Default for Buffers {
-    #[inline(always)]
-    fn default() -> Self {
-        Self {
-            b1: vec![0_u8; CHUNK_LENGTH],
-            b2: vec![0_u8; CHUNK_LENGTH],
-            b3: vec![0_u8; CHUNK_LENGTH],
-        }
-    }
-}
-
-#[derive(Copy, Clone)]
-#[allow(unused)]
-struct SharedBuffer(*mut Buffers);
-
-unsafe impl Send for SharedBuffer {}
-unsafe impl Sync for SharedBuffer {}

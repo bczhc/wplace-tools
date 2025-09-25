@@ -3,14 +3,13 @@
 #![feature(decl_macro)]
 #![feature(try_blocks)]
 
+pub mod checksum;
 pub mod diff_file;
 pub mod indexed_png;
-pub mod checksum;
 
 use indicatif::{ProgressBar, ProgressStyle};
 use pathdiff::diff_paths;
 use std::env::set_var;
-use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 use walkdir::WalkDir;

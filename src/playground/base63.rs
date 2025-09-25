@@ -5,6 +5,7 @@ use num_bigint::BigUint;
 use num_integer::Roots;
 use std::fs::File;
 use std::io::{BufReader, Read, Write};
+use std::iter;
 use std::path::PathBuf;
 use wplace_tools::indexed_png::{read_png, write_png};
 
@@ -28,10 +29,11 @@ fn main() -> anyhow::Result<()> {
             File::open_buffered(&args.input)?.read_to_end(&mut input_data)?;
             let mut image_data = encode(&input_data);
             let dimension = image_dimension(image_data.len() as u32);
-            for _ in 0..(dimension.0 * dimension.1 - image_data.len() as u32) {
-                // padding zeros (transparency)
-                image_data.push(0);
-            }
+            // padding zeros (transparency)
+            image_data.extend(iter::repeat_n(
+                0,
+                (dimension.0 * dimension.1) as usize - image_data.len(),
+            ));
             write_png(args.output, dimension, &image_data)?;
         }
         true => {
@@ -67,7 +69,6 @@ fn decode(image_index_data: &[u8]) -> Vec<u8> {
     if let Some(i) = data.iter().position(|x| *x == 0) {
         data.truncate(i);
     }
-
 
     for x in data.iter_mut() {
         // shift by one because PALETTE[0] is defined as transparency

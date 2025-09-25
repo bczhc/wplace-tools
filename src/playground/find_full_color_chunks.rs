@@ -1,7 +1,5 @@
 #![feature(file_buffered)]
 
-mod diff_size_of_chunks_changed;
-
 /// Find chunks that are fully painted (no transparency at all).
 ///
 /// This only reads `trns` from the PNG info - a high efficient way.

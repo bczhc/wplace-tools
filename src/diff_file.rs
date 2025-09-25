@@ -54,14 +54,14 @@
 //!
 //! All integer serializations are in little-endian. All compressions are using `flate2::*::Deflate(Encoder|Decoder)`.
 
-use crate::{CHUNK_LENGTH, ChunkNumber};
+use crate::ChunkNumber;
 use byteorder::{LE, ReadBytesExt, WriteBytesExt};
 use flate2::{Compression, read, write};
+use static_assertions::const_assert_eq;
 use std::io;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::mpsc::{Receiver, sync_channel};
 use std::thread::spawn;
-use static_assertions::const_assert_eq;
 use yeet_ops::yeet;
 
 pub const MAGIC: [u8; 11] = *b"wplace-diff";
@@ -155,7 +155,7 @@ where
         })
     }
 
-    pub fn chunk_diff_iter(self) -> anyhow::Result<Receiver<io::Result<(u16, u16, Vec<u8>)>>> {
+    pub fn chunk_diff_iter(self) -> Receiver<io::Result<(ChunkNumber, Vec<u8>)>> {
         let (tx, rx) = sync_channel(1024);
 
         spawn(move || {
@@ -167,7 +167,7 @@ where
                     let data_len = reader.read_u32::<LE>()?;
                     let mut buf = vec![0_u8; data_len as usize];
                     reader.read_exact(&mut buf)?;
-                    (x, y, buf)
+                    ((x, y), buf)
                 };
                 match result {
                     Err(e) => tx.send(Err(e)).unwrap(),
@@ -178,7 +178,7 @@ where
             }
         });
 
-        Ok(rx)
+        rx
     }
 }
 
