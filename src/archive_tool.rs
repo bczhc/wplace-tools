@@ -145,6 +145,7 @@ fn diff_png(base_buf: &mut [u8], new_buf: &[u8]) -> anyhow::Result<Option<Vec<u8
     Ok(Some(compressor.finish()?.into_inner()))
 }
 
+#[inline(always)]
 fn apply_png(
     base: impl AsRef<Path>,
     output: impl AsRef<Path>,
@@ -156,10 +157,10 @@ fn apply_png(
         read_png(base, &mut base_buf)?;
     }
 
-    for i in 0..CHUNK_LENGTH {
-        // has mutation flag - apply the pixel
-        if diff_data[i] & MUTATION_MASK == MUTATION_MASK {
-            base_buf[i] = diff_data[i] & PALETTE_INDEX_MASK;
+    for (base_pix, diff_pix) in base_buf.iter_mut().zip(diff_data) {
+        if hint::unlikely(diff_pix & MUTATION_MASK == MUTATION_MASK) {
+            // has mutation flag - apply the pixel
+            *base_pix = diff_pix & PALETTE_INDEX_MASK;
         }
     }
 

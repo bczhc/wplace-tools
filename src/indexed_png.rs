@@ -171,19 +171,15 @@ pub fn read_png(path: impl AsRef<Path>, index_buf: &mut [u8]) -> anyhow::Result<
 
 #[inline(always)]
 pub fn write_chunk_png(path: impl AsRef<Path>, buf: &[u8]) -> anyhow::Result<()> {
-    // TODO: PNG_INFO: benchmarks between `Lazy` and stack allocation
-    static PNG_INFO: Lazy<Info> = Lazy::new(|| {
-        let mut new_info = Info::with_size(1000, 1000);
-        new_info.bit_depth = BitDepth::Eight;
-        new_info.color_type = ColorType::Indexed;
-        // png palette #0 is transparency
-        new_info.trns = Some(Cow::from(&[0_u8]));
-        new_info.palette = Some(Cow::Owned(PALETTE_DATA_IN_PNG.to_vec()));
-        new_info
-    });
+    let mut img_info = Info::with_size(1000, 1000);
+    img_info.bit_depth = BitDepth::Eight;
+    img_info.color_type = ColorType::Indexed;
+    // png palette #0 is transparency
+    img_info.trns = Some(Cow::from(&[0_u8]));
+    img_info.palette = Some(Cow::Borrowed(PALETTE_DATA_IN_PNG.as_ref()));
 
     let writer = BufWriter::new(File::create(path)?);
-    let encoder = png::Encoder::with_info(writer, PNG_INFO.clone())?;
+    let encoder = png::Encoder::with_info(writer, img_info)?;
     let mut writer = encoder.write_header()?;
     writer.write_image_data(buf)?;
     Ok(())
