@@ -6,7 +6,7 @@ use crate::cli::Commands;
 use chrono::{Local, TimeZone};
 use clap::Parser;
 use flate2::{write, Compression};
-use log::info;
+use log::{error, info};
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -22,8 +22,8 @@ use wplace_tools::checksum::Checksum;
 use wplace_tools::diff_file::{DiffFileReader, DiffFileWriter, Metadata};
 use wplace_tools::indexed_png::{read_png, write_chunk_png};
 use wplace_tools::{
-    collect_chunks, new_chunk_file, set_up_logger, stylized_progress_bar, unwrap_os_str, CHUNK_LENGTH,
-    MUTATION_MASK, PALETTE_INDEX_MASK,
+    collect_chunks, new_chunk_file, set_up_logger, stylized_progress_bar, unwrap_os_str, ChunkNumber,
+    CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK,
 };
 
 mod cli {
@@ -61,6 +61,10 @@ mod cli {
 
             #[arg(value_name = "OUTPUT", value_hint = ValueHint::FilePath)]
             output: PathBuf,
+
+            /// Do not verify the checksum.
+            #[arg(long, default_value = "false")]
+            no_checksum: bool,
         },
 
         /// Compare two archives. This is used to verify if a diff-apply pipeline works correctly.
@@ -227,8 +231,7 @@ fn main() -> anyhow::Result<()> {
                 });
                 progress.finish();
                 Arc::try_unwrap(checksum)
-                    .ok()
-                    .unwrap()
+                    .unwrap_or_else(|_| unreachable!())
                     .into_inner()
                     .unwrap()
                     .compute()
@@ -241,12 +244,18 @@ fn main() -> anyhow::Result<()> {
             }
             diff_file.finish(diff_counter, handle.join().unwrap().into())?;
         }
-        Commands::Apply { base, diff, output } => {
+        Commands::Apply {
+            base,
+            diff,
+            output,
+            no_checksum,
+        } => {
             info!("Opening diff file...");
             let diff_file = DiffFileReader::new(File::open_buffered(&diff)?)?;
             let index = diff_file.index.clone();
             let index_length = index.len();
             let metadata = &diff_file.metadata;
+            let checksum = metadata.checksum;
             let changed_chunks = Arc::new(Mutex::new(HashSet::new()));
             print_diff_info(&diff_file);
 
@@ -285,36 +294,28 @@ fn main() -> anyhow::Result<()> {
                 .unwrap();
             let progress = stylized_progress_bar(index_length as u64 - changed_chunks.len() as u64);
 
-            index.into_par_iter().for_each(|(chunk_x, chunk_y)| {
+            index.iter().par_bridge().for_each(|&(chunk_x, chunk_y)| {
                 if !changed_chunks.contains(&(chunk_x, chunk_y)) {
                     // chunks that are in the archive index but don't have their diff data
                     // are unchanged
-                    fs::copy(
+                    if let Err(e) = fs::copy(
                         base.join(format!("{chunk_x}/{chunk_y}.png")),
                         new_chunk_file(&output, (chunk_x, chunk_y), "png"),
-                    )
-                    .unwrap();
+                    ) {
+                        error!("Failed to copy: {}", e);
+                    };
                     progress.inc(1);
                 }
             });
             progress.finish();
 
-            /*index.into_par_iter().for_each(|(x, y)| {
-                let base_file = base.join(format!("{x}/{y}.png"));
-                let diff_file = diff.join(format!("{x}/{y}.bin"));
-                let output_file = new_chunk_file(&output, (x, y), "png");
-
-                if diff_file.exists() {
-                    // chunk changed
-                    apply_png(base_file, diff_file, output_file).unwrap();
-                } else {
-                    // chunk not changed; just copy one from `base`
-                    fs::copy(&base_file, &output_file).unwrap();
+            if !no_checksum {
+                info!("Checksum validation...");
+                let computed = checksum_with_progress(&index, &output);
+                if &checksum != computed.as_bytes() {
+                    return Err(anyhow::anyhow!("Checksum error!"));
                 }
-                progress.inc(1);
-            });*/
-
-            progress.finish();
+            }
         }
         Commands::Compare { base, new } => {
             info!("Collecting files 'base'...");
@@ -368,30 +369,8 @@ fn main() -> anyhow::Result<()> {
             info!("Collecting files...");
             let collected = collect_chunks(&archive, None)?;
             info!("Computing checksum...");
-            let progress = stylized_progress_bar(collected.len() as u64);
-
-            let checksum = Arc::new(Mutex::new(Checksum::new()));
-            collected
-                .into_iter()
-                .par_bridge()
-                .for_each_with(Arc::clone(&checksum), |c, (x, y)| {
-                    let chunk_file = archive.join(format!("{x}/{y}.png"));
-                    let mut chunk_buf = vec![0_u8; CHUNK_LENGTH];
-                    read_png(chunk_file, &mut chunk_buf).unwrap();
-                    checksum.lock().unwrap().add_chunk((x, y), &chunk_buf);
-
-                    progress.inc(1);
-                });
-            progress.finish();
-            println!(
-                "{}",
-                Arc::try_unwrap(checksum)
-                    .ok()
-                    .unwrap()
-                    .into_inner()
-                    .unwrap()
-                    .compute()
-            );
+            let hash = checksum_with_progress(&collected, archive);
+            println!("{}", hash);
         }
 
         Commands::Show { diff } => {
@@ -401,6 +380,31 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn checksum_with_progress(chunks: &[ChunkNumber], archive_path: impl AsRef<Path>) -> blake3::Hash {
+    let progress = stylized_progress_bar(chunks.len() as u64);
+    let archive_path = archive_path.as_ref();
+
+    let checksum = Arc::new(Mutex::new(Checksum::new()));
+    chunks
+        .into_iter()
+        .par_bridge()
+        .for_each_with(Arc::clone(&checksum), |c, &(x, y)| {
+            let chunk_file = archive_path.join(format!("{x}/{y}.png"));
+            let mut chunk_buf = vec![0_u8; CHUNK_LENGTH];
+            read_png(chunk_file, &mut chunk_buf).unwrap();
+            checksum.lock().unwrap().add_chunk((x, y), &chunk_buf);
+
+            progress.inc(1);
+        });
+    progress.finish();
+    Arc::try_unwrap(checksum)
+        .ok()
+        .unwrap()
+        .into_inner()
+        .unwrap()
+        .compute()
 }
 
 fn print_diff_info(reader: &DiffFileReader<impl Read>) {
