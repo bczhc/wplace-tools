@@ -116,19 +116,19 @@ fn compare_png(base: impl AsRef<Path>, new: impl AsRef<Path>) -> anyhow::Result<
     Ok(img1 == img2)
 }
 
-/// Returns compressed diff between two images. None is for identical images.
+/// Returns raw diff between two images. None is for identical images.
 #[inline(always)]
 fn diff_png(base: impl AsRef<Path>, new: impl AsRef<Path>) -> anyhow::Result<Option<Vec<u8>>> {
     let base = base.as_ref();
     let new = new.as_ref();
 
-    let mut buf = vec![0_u8; CHUNK_LENGTH * 2];
-    let (buf1, buf2) = buf.split_at_mut(CHUNK_LENGTH);
+    let mut buf1 = vec![0_u8; CHUNK_LENGTH];
+    let mut buf2 = vec![0_u8; CHUNK_LENGTH];
 
     if base.exists() {
-        read_png(base, buf1)?;
+        read_png(base, &mut buf1)?;
     }
-    read_png(new, buf2)?;
+    read_png(new, &mut buf2)?;
 
     // It's expecting that a large percent of the chunks are not mutated.
     // Thus in this case, disabling further diff creation can reduce the process time.
@@ -138,19 +138,23 @@ fn diff_png(base: impl AsRef<Path>, new: impl AsRef<Path>) -> anyhow::Result<Opt
 
     for x in buf1.iter_mut().zip(buf2) {
         let i1 = *x.0 & PALETTE_INDEX_MASK;
-        let i2 = *x.1 & PALETTE_INDEX_MASK;
+        let i2 = x.1 & PALETTE_INDEX_MASK;
         if hint::likely(i1 == i2) {
             *x.0 = 0;
         } else {
             *x.0 = i2 | MUTATION_MASK;
         }
     }
+    Ok(Some(buf1))
+}
 
+#[inline(always)]
+fn compress_raw_diff(data: &[u8]) -> anyhow::Result<Vec<u8>> {
     let mut compressor =
         write::DeflateEncoder::new(Cursor::new(Vec::new()), Compression::default());
-    compressor.write_all(buf1)?;
+    compressor.write_all(data)?;
     let data = compressor.finish()?.into_inner();
-    Ok(Some(data))
+    Ok(data)
 }
 
 fn apply_png(
@@ -195,7 +199,8 @@ fn main() -> anyhow::Result<()> {
             let mut diff_file = DiffFileWriter::new(
                 output_file,
                 Metadata {
-                    diff_count: 0, /* placeholder */
+                    diff_count: 0,                /* placeholder */
+                    checksum: Default::default(), /* placeholder */
                     name: this_name.into(),
                     parent: parent_name.into(),
                     creation_time: SystemTime::now()
@@ -207,21 +212,30 @@ fn main() -> anyhow::Result<()> {
             )?;
 
             let (tx, rx) = sync_channel(1024);
-
             info!("Processing {} files...", collected.len());
+
             let progress = stylized_progress_bar(collected.len() as u64);
-            spawn(move || {
+            let handle=spawn(move || {
+                let checksum = Arc::new(Mutex::new(Checksum::new()));
                 collected.into_par_iter().for_each_with(tx, |tx, (x, y)| {
                     let base_file = base.join(format!("{x}/{y}.png"));
                     let new_file = new.join(format!("{x}/{y}.png"));
 
-                    let diff_buffer = diff_png(base_file, new_file).unwrap();
-                    if let Some(b) = diff_buffer {
-                        tx.send((x, y, b)).unwrap();
+                    let raw_diff = diff_png(base_file, new_file).unwrap();
+                    if let Some(b) = raw_diff {
+                        checksum.lock().unwrap().add_chunk((x, y), &b);
+                        let compressed = compress_raw_diff(&b).unwrap();
+                        tx.send((x, y, compressed)).unwrap();
                     }
                     progress.inc(1);
                 });
                 progress.finish();
+                Arc::try_unwrap(checksum)
+                    .ok()
+                    .unwrap()
+                    .into_inner()
+                    .unwrap()
+                    .compute()
             });
 
             let mut diff_counter = 0_u32;
@@ -229,7 +243,7 @@ fn main() -> anyhow::Result<()> {
                 diff_file.add_chunk_diff((x, y), &diff)?;
                 diff_counter += 1;
             }
-            diff_file.finish(diff_counter)?;
+            diff_file.finish(diff_counter, handle.join().unwrap().into())?;
         }
         Commands::Apply { base, diff, output } => {
             info!("Opening diff file...");
@@ -270,7 +284,7 @@ fn main() -> anyhow::Result<()> {
                         .try_into()
                         .expect("Raw diff data length is expected to be 1_000_000"),
                 )
-                    .unwrap();
+                .unwrap();
                 changed_chunks.lock().unwrap().insert((chunk_x, chunk_y));
                 progress.inc(1);
             });
@@ -291,7 +305,7 @@ fn main() -> anyhow::Result<()> {
                         base.join(format!("{chunk_x}/{chunk_y}.png")),
                         new_chunk_file(&output, (chunk_x, chunk_y), "png"),
                     )
-                        .unwrap();
+                    .unwrap();
                     progress.inc(1);
                 }
             });
@@ -369,16 +383,27 @@ fn main() -> anyhow::Result<()> {
             let progress = stylized_progress_bar(collected.len() as u64);
 
             let checksum = Arc::new(Mutex::new(Checksum::new()));
-            collected.into_iter().par_bridge().for_each_with(Arc::clone(&checksum), |c, (x, y)| {
-                let chunk_file = archive.join(format!("{x}/{y}.png"));
-                let mut chunk_buf = vec![0_u8; CHUNK_LENGTH];
-                read_png(chunk_file, &mut chunk_buf).unwrap();
-                checksum.lock().unwrap().add_chunk((x, y), &chunk_buf);
+            collected
+                .into_iter()
+                .par_bridge()
+                .for_each_with(Arc::clone(&checksum), |c, (x, y)| {
+                    let chunk_file = archive.join(format!("{x}/{y}.png"));
+                    let mut chunk_buf = vec![0_u8; CHUNK_LENGTH];
+                    read_png(chunk_file, &mut chunk_buf).unwrap();
+                    checksum.lock().unwrap().add_chunk((x, y), &chunk_buf);
 
-                progress.inc(1);
-            });
+                    progress.inc(1);
+                });
             progress.finish();
-            println!("{}", Arc::try_unwrap(checksum).ok().unwrap().into_inner().unwrap().compute());
+            println!(
+                "{}",
+                Arc::try_unwrap(checksum)
+                    .ok()
+                    .unwrap()
+                    .into_inner()
+                    .unwrap()
+                    .compute()
+            );
         }
     }
 

@@ -1,6 +1,7 @@
 use crate::{ChunkNumber, CHUNK_LENGTH};
 use blake3::Hash;
 use std::cmp::Ordering;
+use std::fmt::{Debug, Formatter};
 use byteorder::{ByteOrder, LE};
 
 #[derive(Default)]

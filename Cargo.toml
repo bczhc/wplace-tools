@@ -23,6 +23,7 @@ num-bigint = "0.4.6"
 num-integer = "0.1.46"
 num-traits = "0.2.19"
 blake3 = "1.8.2"
+static_assertions = "1.1.0"
 
 [[bin]]
 name = "archive-tool"

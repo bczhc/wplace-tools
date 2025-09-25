@@ -61,9 +61,13 @@ use std::io;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::mpsc::{Receiver, sync_channel};
 use std::thread::spawn;
+use static_assertions::const_assert_eq;
 use yeet_ops::yeet;
 
 pub const MAGIC: [u8; 11] = *b"wplace-diff";
+
+const_assert_eq!(blake3::OUT_LEN, 32);
+pub type ChecksumHash = [u8; blake3::OUT_LEN];
 
 /// Metadata of a diff file.
 ///
@@ -73,6 +77,8 @@ pub const MAGIC: [u8; 11] = *b"wplace-diff";
 pub struct Metadata {
     /// Number of chunks changed
     pub diff_count: u32,
+    /// Checksum of the original archive.
+    pub checksum: ChecksumHash,
     pub name: String,
     pub parent: String,
     pub creation_time: u64,
@@ -112,15 +118,14 @@ where
         Ok(())
     }
 
-    pub fn finish(self, diff_count: u32) -> io::Result<()> {
+    pub fn finish(self, diff_count: u32, checksum: ChecksumHash) -> io::Result<()> {
         let mut w = self.compressor.finish()?;
         w.seek(SeekFrom::Start(DIFF_COUNT_OFFSET))?;
         w.write_u32::<LE>(diff_count)?;
+        w.write_all(&checksum)?;
         Ok(())
     }
 }
-
-const CHUNK_DIFF_SIZE: usize = 2 /* size of ChunkNumber a.k.a. u16 */ + 2 + CHUNK_LENGTH;
 
 pub struct DiffFileReader<R: Read> {
     decompressor: read::DeflateDecoder<R>,
@@ -201,11 +206,14 @@ impl WriteTo for Metadata {
 impl ReadFrom for Metadata {
     fn read_from(mut r: impl Read) -> io::Result<Self> {
         let diff_count = r.read_u32::<LE>()?;
+        let mut checksum = [0_u8; blake3::OUT_LEN];
+        r.read_exact(&mut checksum)?;
         let creation_time = r.read_u64::<LE>()?;
         let parent = String::read_from(&mut r)?;
         let name = String::read_from(&mut r)?;
         Ok(Self {
             diff_count,
+            checksum,
             creation_time,
             parent,
             name,
