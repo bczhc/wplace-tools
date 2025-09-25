@@ -5,7 +5,7 @@
 use crate::cli::Commands;
 use chrono::{Local, TimeZone};
 use clap::Parser;
-use flate2::{Compression, write};
+use flate2::{write, Compression};
 use log::info;
 use rayon::prelude::*;
 use std::cell::RefCell;
@@ -18,11 +18,12 @@ use std::sync::{Arc, Mutex};
 use std::thread::spawn;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, hint};
+use wplace_tools::checksum::Checksum;
 use wplace_tools::diff_file::{DiffFileReader, DiffFileWriter, Metadata};
 use wplace_tools::indexed_png::{read_png, write_chunk_png};
 use wplace_tools::{
-    CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK, collect_chunks, new_chunk_file, set_up_logger,
-    stylized_progress_bar, unwrap_os_str,
+    collect_chunks, new_chunk_file, set_up_logger, stylized_progress_bar, unwrap_os_str, CHUNK_LENGTH,
+    MUTATION_MASK, PALETTE_INDEX_MASK,
 };
 
 mod cli {
@@ -81,6 +82,12 @@ mod cli {
 
             #[command(flatten)]
             tiles_range_arg: TilesRangeArg,
+        },
+
+        /// Compute the checksum of an archive.
+        Checksum {
+            #[arg(value_hint = ValueHint::FilePath)]
+            archive: PathBuf,
         },
     }
 
@@ -263,7 +270,7 @@ fn main() -> anyhow::Result<()> {
                         .try_into()
                         .expect("Raw diff data length is expected to be 1_000_000"),
                 )
-                .unwrap();
+                    .unwrap();
                 changed_chunks.lock().unwrap().insert((chunk_x, chunk_y));
                 progress.inc(1);
             });
@@ -284,7 +291,7 @@ fn main() -> anyhow::Result<()> {
                         base.join(format!("{chunk_x}/{chunk_y}.png")),
                         new_chunk_file(&output, (chunk_x, chunk_y), "png"),
                     )
-                    .unwrap();
+                        .unwrap();
                     progress.inc(1);
                 }
             });
@@ -353,6 +360,25 @@ fn main() -> anyhow::Result<()> {
                 progress.inc(1);
             });
             progress.finish();
+        }
+
+        Commands::Checksum { archive } => {
+            info!("Collecting files...");
+            let collected = collect_chunks(&archive, None)?;
+            info!("Computing checksum...");
+            let progress = stylized_progress_bar(collected.len() as u64);
+
+            let checksum = Arc::new(Mutex::new(Checksum::new()));
+            collected.into_iter().par_bridge().for_each_with(Arc::clone(&checksum), |c, (x, y)| {
+                let chunk_file = archive.join(format!("{x}/{y}.png"));
+                let mut chunk_buf = vec![0_u8; CHUNK_LENGTH];
+                read_png(chunk_file, &mut chunk_buf).unwrap();
+                checksum.lock().unwrap().add_chunk((x, y), &chunk_buf);
+
+                progress.inc(1);
+            });
+            progress.finish();
+            println!("{}", Arc::try_unwrap(checksum).ok().unwrap().into_inner().unwrap().compute());
         }
     }
 

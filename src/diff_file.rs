@@ -237,6 +237,7 @@ impl ReadFrom for String {
 /// **Compressed data expands to:**
 ///
 /// \[ chunk0_x (u16) | chunk0_y (u16) | chunk1_x (u16) | chunk1_y (u16) | ... | chunkN_x (u16) | chunkN_y (u16) \]
+#[repr(transparent)]
 struct ArchiveIndex(Vec<ChunkNumber>);
 
 impl WriteTo for ArchiveIndex {

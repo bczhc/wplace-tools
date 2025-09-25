@@ -5,6 +5,7 @@
 
 pub mod diff_file;
 pub mod indexed_png;
+pub mod checksum;
 
 use indicatif::{ProgressBar, ProgressStyle};
 use pathdiff::diff_paths;

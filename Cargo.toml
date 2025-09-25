@@ -39,7 +39,3 @@ path = "src/playground/diff_size_of_chunks_changed.rs"
 [[bin]]
 name = "base63"
 path = "src/playground/base63.rs"
-
-[[bin]]
-name = "archive-checksum"
-path = "src/playground/archive_checksum.rs"
