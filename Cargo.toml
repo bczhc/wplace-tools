@@ -24,6 +24,9 @@ num-integer = "0.1.46"
 num-traits = "0.2.19"
 blake3 = "1.8.2"
 static_assertions = "1.1.0"
+rawzip = "0.4.1"
+regex = "1.11.3"
+lazy-regex = "3.4.1"
 
 [[bin]]
 name = "archive-tool"
@@ -40,3 +43,7 @@ path = "src/playground/diff_size_of_chunks_changed.rs"
 [[bin]]
 name = "base63"
 path = "src/playground/base63.rs"
+
+[[bin]]
+name = "zip"
+path = "src/playground/zip.rs"

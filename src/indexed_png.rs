@@ -4,7 +4,7 @@ use once_cell::sync::Lazy;
 use png::{BitDepth, ColorType, Info};
 use std::borrow::Cow;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Cursor, Write};
+use std::io::{BufRead, BufReader, BufWriter, Cursor, Read, Seek, Write};
 use std::path::Path;
 
 static PALETTE_DATA_IN_PNG: Lazy<[u8; 64 * 3]> = Lazy::new(|| {
@@ -112,8 +112,13 @@ impl PixelMapper {
     }
 }
 
+#[inline(always)]
 pub fn read_png(path: impl AsRef<Path>, index_buf: &mut [u8]) -> anyhow::Result<()> {
-    let png = png::Decoder::new(BufReader::new(File::open(&path)?));
+    read_png_reader(File::open_buffered(path)?, index_buf)
+}
+
+pub fn read_png_reader(reader: impl BufRead + Seek, index_buf: &mut [u8]) -> anyhow::Result<()> {
+    let png = png::Decoder::new(reader);
     let mut reader = png.read_info()?;
     let png_buf_size = reader
         .output_buffer_size()
