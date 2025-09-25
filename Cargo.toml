@@ -22,6 +22,7 @@ chrono = "0.4.42"
 num-bigint = "0.4.6"
 num-integer = "0.1.46"
 num-traits = "0.2.19"
+blake3 = "1.8.2"
 
 [[bin]]
 name = "archive-tool"
@@ -38,3 +39,7 @@ path = "src/playground/diff_size_of_chunks_changed.rs"
 [[bin]]
 name = "base63"
 path = "src/playground/base63.rs"
+
+[[bin]]
+name = "archive-checksum"
+path = "src/playground/archive_checksum.rs"
