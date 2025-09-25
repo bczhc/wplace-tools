@@ -196,6 +196,7 @@ where
 impl WriteTo for Metadata {
     fn write_to(&self, mut w: impl Write) -> io::Result<()> {
         w.write_u32::<LE>(self.diff_count)?;
+        w.write_all(&self.checksum)?;
         w.write_u64::<LE>(self.creation_time)?;
         self.parent.write_to(&mut w)?;
         self.name.write_to(&mut w)?;

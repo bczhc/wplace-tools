@@ -11,7 +11,7 @@ use rayon::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{Cursor, Write};
+use std::io::{Cursor, Read, Write};
 use std::path::Path;
 use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
@@ -89,6 +89,12 @@ mod cli {
             #[arg(value_hint = ValueHint::FilePath)]
             archive: PathBuf,
         },
+
+        /// Print info of the diff file.
+        Show {
+            #[arg(value_hint = ValueHint::FilePath)]
+            diff: PathBuf,
+        },
     }
 
     #[derive(Args, Debug)]
@@ -118,25 +124,8 @@ fn compare_png(base: impl AsRef<Path>, new: impl AsRef<Path>) -> anyhow::Result<
 
 /// Returns raw diff between two images. None is for identical images.
 #[inline(always)]
-fn diff_png(base: impl AsRef<Path>, new: impl AsRef<Path>) -> anyhow::Result<Option<Vec<u8>>> {
-    let base = base.as_ref();
-    let new = new.as_ref();
-
-    let mut buf1 = vec![0_u8; CHUNK_LENGTH];
-    let mut buf2 = vec![0_u8; CHUNK_LENGTH];
-
-    if base.exists() {
-        read_png(base, &mut buf1)?;
-    }
-    read_png(new, &mut buf2)?;
-
-    // It's expecting that a large percent of the chunks are not mutated.
-    // Thus in this case, disabling further diff creation can reduce the process time.
-    if base.exists() && buf1 == buf2 {
-        return Ok(None);
-    }
-
-    for x in buf1.iter_mut().zip(buf2) {
+fn diff_png(base_buf: &mut [u8], new_buf: &[u8]) -> anyhow::Result<Option<Vec<u8>>> {
+    for x in base_buf.iter_mut().zip(new_buf) {
         let i1 = *x.0 & PALETTE_INDEX_MASK;
         let i2 = x.1 & PALETTE_INDEX_MASK;
         if hint::likely(i1 == i2) {
@@ -145,16 +134,11 @@ fn diff_png(base: impl AsRef<Path>, new: impl AsRef<Path>) -> anyhow::Result<Opt
             *x.0 = i2 | MUTATION_MASK;
         }
     }
-    Ok(Some(buf1))
-}
 
-#[inline(always)]
-fn compress_raw_diff(data: &[u8]) -> anyhow::Result<Vec<u8>> {
     let mut compressor =
         write::DeflateEncoder::new(Cursor::new(Vec::new()), Compression::default());
-    compressor.write_all(data)?;
-    let data = compressor.finish()?.into_inner();
-    Ok(data)
+    compressor.write_all(base_buf)?;
+    Ok(Some(compressor.finish()?.into_inner()))
 }
 
 fn apply_png(
@@ -215,17 +199,29 @@ fn main() -> anyhow::Result<()> {
             info!("Processing {} files...", collected.len());
 
             let progress = stylized_progress_bar(collected.len() as u64);
-            let handle=spawn(move || {
+            let handle = spawn(move || {
                 let checksum = Arc::new(Mutex::new(Checksum::new()));
                 collected.into_par_iter().for_each_with(tx, |tx, (x, y)| {
                     let base_file = base.join(format!("{x}/{y}.png"));
                     let new_file = new.join(format!("{x}/{y}.png"));
 
-                    let raw_diff = diff_png(base_file, new_file).unwrap();
-                    if let Some(b) = raw_diff {
-                        checksum.lock().unwrap().add_chunk((x, y), &b);
-                        let compressed = compress_raw_diff(&b).unwrap();
-                        tx.send((x, y, compressed)).unwrap();
+                    let mut base_buf = vec![0_u8; CHUNK_LENGTH];
+                    let mut new_buf = vec![0_u8; CHUNK_LENGTH];
+
+                    if base_file.exists() {
+                        read_png(&base_file, &mut base_buf).unwrap();
+                    }
+                    read_png(&new_file, &mut new_buf).unwrap();
+
+                    checksum.lock().unwrap().add_chunk((x, y), &new_buf);
+
+                    // It's expecting that a large percent of the chunks are not mutated.
+                    // Thus in this case, only computing diff for changed chunks can reduce the process time.
+                    if !base_file.exists() || base_buf != new_buf {
+                        let compressed_diff = diff_png(&mut base_buf, &new_buf).unwrap();
+                        if let Some(b) = compressed_diff {
+                            tx.send((x, y, b)).unwrap();
+                        }
                     }
                     progress.inc(1);
                 });
@@ -251,16 +247,8 @@ fn main() -> anyhow::Result<()> {
             let index = diff_file.index.clone();
             let index_length = index.len();
             let metadata = &diff_file.metadata;
-            info!(
-                "Total chunks: {}, parent: {}, name: {}, creation time: {}",
-                index_length,
-                metadata.parent,
-                metadata.name,
-                Local
-                    .timestamp_millis_opt(metadata.creation_time as i64)
-                    .unwrap()
-            );
             let changed_chunks = Arc::new(Mutex::new(HashSet::new()));
+            print_diff_info(&diff_file);
 
             info!("Applying diff to {} chunks...", metadata.diff_count);
             let progress = stylized_progress_bar(metadata.diff_count as u64);
@@ -405,9 +393,34 @@ fn main() -> anyhow::Result<()> {
                     .compute()
             );
         }
+
+        Commands::Show { diff } => {
+            let reader = DiffFileReader::new(File::open_buffered(&diff)?)?;
+            print_diff_info(&reader);
+        }
     }
 
     Ok(())
+}
+
+fn print_diff_info(reader: &DiffFileReader<impl Read>) {
+    let meta = &reader.metadata;
+    println!(
+        "Creation time: {}
+Archive name: {}
+Parent name: {}
+Total chunks: {}
+Changed chunks: {}
+Checksum: {}",
+        Local
+            .timestamp_millis_opt(meta.creation_time as i64)
+            .unwrap(),
+        meta.name,
+        meta.parent,
+        reader.index.len(),
+        meta.diff_count,
+        blake3::Hash::from_bytes(meta.checksum)
+    )
 }
 
 #[derive(Clone)]
