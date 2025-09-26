@@ -1,7 +1,0 @@
-#!/bin/bash
-
-# This will print some mysterious text!
-wget -q https://backend.wplace.live/files/s0/tiles/1729/864.png -O /tmp/864.png
-magick /tmp/864.png -crop 11x10+235+139 /tmp/out.png
-cargo run --bin base63 -- -d /tmp/out.png /tmp/output
-cat /tmp/output

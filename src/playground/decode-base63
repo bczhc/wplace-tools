@@ -1,0 +1,14 @@
+#!/bin/bash
+
+# Chinese.
+wget -q https://backend.wplace.live/files/s0/tiles/1729/864.png -O /tmp/864.png
+magick /tmp/864.png -crop 11x10+235+139 /tmp/out.png
+cargo run --bin base63 -- -d /tmp/out.png /tmp/output
+cat /tmp/output
+
+# Poem The Stolen Child.
+wget -q https://backend.wplace.live/files/s0/tiles/90/294.png -O /tmp/294.png
+magick /tmp/294.png -crop 33x32+844+801 /tmp/out.png
+cargo run --bin base63 -- -d /tmp/out.png /tmp/output
+cat /tmp/output | bzip2 -d
+echo
