@@ -27,6 +27,7 @@ static_assertions = "1.1.0"
 rawzip = "0.4.1"
 regex = "1.11.3"
 lazy-regex = "3.4.1"
+tempfile = "3.23.0"
 
 [[bin]]
 name = "archive-tool"

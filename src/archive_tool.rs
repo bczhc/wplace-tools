@@ -6,18 +6,19 @@ use crate::cli::Commands;
 use chrono::{Local, TimeZone};
 use clap::Parser;
 use flate2::{Compression, write};
-use log::{error, info};
+use log::{debug, error, info};
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{Cursor, Read, Write};
+use std::io::{BufWriter, Cursor, Read, Write};
 use std::path::Path;
 use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
 use std::thread::spawn;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, hint};
+use tempfile::NamedTempFile;
 use wplace_tools::checksum::Checksum;
 use wplace_tools::diff_file::{DiffFileReader, DiffFileWriter, Metadata};
 use wplace_tools::indexed_png::{read_png, write_chunk_png};
@@ -182,9 +183,13 @@ fn main() -> anyhow::Result<()> {
             let collected = collect_chunks(&new, None)?;
 
             info!("Creating diff file...");
+            let output = output.canonicalize().expect("Can't canonicalize the output path");
+            let output_dir = output.parent().expect("Can not get parent of the output file");
+            let temp_file = NamedTempFile::new_in(output_dir)?;
+            debug!("temp_file: {}", temp_file.as_ref().display());
             let parent_name = unwrap_os_str!(base.file_name().expect("No filename"));
             let this_name = unwrap_os_str!(new.file_name().expect("No filename"));
-            let output_file = File::create_buffered(output)?;
+            let output_file = File::create_buffered(temp_file.as_ref())?;
             let mut diff_file = DiffFileWriter::new(
                 output_file,
                 Metadata {
@@ -244,6 +249,7 @@ fn main() -> anyhow::Result<()> {
                 diff_counter += 1;
             }
             diff_file.finish(diff_counter, handle.join().unwrap().into())?;
+            temp_file.persist(output)?;
         }
         Commands::Apply {
             base,
