@@ -183,8 +183,10 @@ fn main() -> anyhow::Result<()> {
             let collected = collect_chunks(&new, None)?;
 
             info!("Creating diff file...");
-            let output = output.canonicalize().expect("Can't canonicalize the output path");
-            let output_dir = output.parent().expect("Can not get parent of the output file");
+            let mut output_dir = output.parent().expect("Can not get parent of the output file");
+            if output_dir == Path::new("") {
+                output_dir = Path::new(".");
+            }
             let temp_file = NamedTempFile::new_in(output_dir)?;
             debug!("temp_file: {}", temp_file.as_ref().display());
             let parent_name = unwrap_os_str!(base.file_name().expect("No filename"));
