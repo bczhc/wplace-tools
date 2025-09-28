@@ -50,3 +50,7 @@ path = "src/playground/base63.rs"
 [[bin]]
 name = "zip"
 path = "src/playground/zip.rs"
+
+[[bin]]
+name = "alter"
+path = "src/playground/alter.rs"
