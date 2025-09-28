@@ -74,6 +74,7 @@ pub type ChecksumHash = [u8; blake3::OUT_LEN];
 /// ## Serialization format
 ///
 /// \[ diff_count (u32) | name_length (u32) | name (var-length) | parent_length (u32) | name (var-length) | creation_time (u64) \]
+#[derive(Clone,Debug)]
 pub struct Metadata {
     /// Number of chunks changed
     pub diff_count: u32,

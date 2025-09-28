@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::spawn;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, hint};
+use serde::Serialize;
 use tempfile::NamedTempFile;
 use wplace_tools::checksum::Checksum;
 use wplace_tools::diff_file::{DiffFileReader, DiffFileWriter, Metadata};
@@ -99,6 +100,9 @@ mod cli {
         Show {
             #[arg(value_hint = ValueHint::FilePath)]
             diff: PathBuf,
+            /// Output as JSON format.
+            #[arg(long)]
+            json: bool,
         },
     }
 
@@ -322,7 +326,7 @@ fn main() -> anyhow::Result<()> {
                 info!("Checksum validation...");
                 let computed = checksum_with_progress(&index, &output);
                 if &checksum != computed.as_bytes() {
-                    return Err(anyhow::anyhow!("Checksum error!"));
+                    return Err(anyhow::anyhow!("Checksum mismatch!"));
                 }
             }
         }
@@ -382,9 +386,14 @@ fn main() -> anyhow::Result<()> {
             println!("{}", hash);
         }
 
-        Commands::Show { diff } => {
+        Commands::Show { diff,json } => {
             let reader = DiffFileReader::new(File::open_buffered(&diff)?)?;
-            print_diff_info(&reader);
+            if json {
+                let info = DiffFileInfo::new(&reader);
+                println!("{}", serde_json::to_string(&info).unwrap());
+            } else {
+                print_diff_info(&reader);
+            }
         }
     }
 
@@ -431,4 +440,29 @@ Checksum: {}",
         meta.diff_count,
         blake3::Hash::from_bytes(meta.checksum)
     )
+}
+
+#[derive(Serialize)]
+#[serde(rename = "camelCase")]
+struct DiffFileInfo {
+    creation_time: u64,
+    name: String,
+    parent: String,
+    total_chunks: u32,
+    changed_chunks: u32,
+    checksum: String,
+}
+
+impl DiffFileInfo {
+    fn new(reader: &DiffFileReader<impl Read>) -> Self {
+        let meta = reader.metadata.clone();
+        Self {
+            creation_time: meta.creation_time,
+            name: meta.name,
+            parent: meta.parent,
+            total_chunks: reader.index.len().try_into().unwrap(),
+            changed_chunks: meta.diff_count,
+            checksum: format!("{}", blake3::Hash::from_bytes(meta.checksum)),
+        }
+    }
 }
