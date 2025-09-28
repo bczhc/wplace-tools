@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::spawn;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, hint};
+use std::process::abort;
 use serde::Serialize;
 use tempfile::NamedTempFile;
 use wplace_tools::checksum::Checksum;
@@ -315,7 +316,8 @@ fn main() -> anyhow::Result<()> {
                         base.join(format!("{chunk_x}/{chunk_y}.png")),
                         new_chunk_file(&output, (chunk_x, chunk_y), "png"),
                     ) {
-                        error!("Failed to copy: {}", e);
+                        error!("Failed to copy: {}; abort", e);
+                        abort();
                     };
                     progress.inc(1);
                 }
