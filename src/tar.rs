@@ -6,7 +6,6 @@ use std::io;
 use std::io::{BufReader, Read, Seek, SeekFrom, Take};
 use std::path::{Path, PathBuf};
 use tar::EntryType;
-use yeet_ops::yeet;
 
 pub struct Range {
     pub start: u64,
@@ -16,15 +15,22 @@ pub struct Range {
 pub struct ChunksTarReader {
     pub map: BTreeMap<ChunkNumber, Range>,
     path: PathBuf,
+    pub root_name: String,
 }
 
 impl ChunksTarReader {
     pub fn open_with_index(path: impl AsRef<Path>) -> anyhow::Result<Self> {
-        let index=Self::index_chunks(&path)?;
-        Ok(Self { map: index, path: path.as_ref().into() })
+        let (index, root_name) = Self::index_chunks(&path)?;
+        Ok(Self {
+            map: index,
+            path: path.as_ref().into(),
+            root_name,
+        })
     }
 
-    fn index_chunks(path: impl AsRef<Path>) -> anyhow::Result<BTreeMap<ChunkNumber, Range>> {
+    fn index_chunks(
+        path: impl AsRef<Path>,
+    ) -> anyhow::Result<(BTreeMap<ChunkNumber, Range>, String)> {
         let mut map = BTreeMap::new();
 
         let mut tar = tar::Archive::new(File::open_buffered(path)?);
@@ -60,7 +66,7 @@ impl ChunksTarReader {
             };
             map.insert(chunk_number, range);
         }
-        Ok(map)
+        Ok((map, root_name))
     }
 
     pub fn open_chunk(

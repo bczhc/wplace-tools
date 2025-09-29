@@ -15,7 +15,7 @@ use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::abort;
 use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
@@ -29,8 +29,8 @@ use wplace_tools::indexed_png::{read_png, read_png_reader, write_chunk_png};
 use wplace_tools::tar::ChunksTarReader;
 use wplace_tools::zip::ChunksZipReader;
 use wplace_tools::{
-    collect_chunks, new_chunk_file, set_up_logger, stylized_progress_bar, unwrap_os_str, ChunkNumber,
-    CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK,
+    collect_chunks, extract_datetime, new_chunk_file, set_up_logger, stylized_progress_bar, unwrap_os_str,
+    ChunkNumber, CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK,
 };
 use yeet_ops::yeet;
 
@@ -189,81 +189,15 @@ fn main() -> anyhow::Result<()> {
     let args = cli::Cli::parse();
     match args.command {
         Commands::Diff { base, new, output } => {
-            info!("Collecting files...");
-            let collected = collect_chunks(&new, None)?;
-
-            info!("Creating diff file...");
-            let mut output_dir = output
-                .parent()
-                .expect("Can not get parent of the output file");
-            if output_dir == Path::new("") {
-                output_dir = Path::new(".");
+            // a special handle for directly processing tar files
+            if base.extension() == Some(OsStr::new("tar"))
+                && new.extension() == Some(OsStr::new("tar"))
+            {
+                do_diff_for_tar(base, new, output)?;
+                return Ok(());
             }
-            let temp_file = NamedTempFile::new_in(output_dir)?;
-            debug!("temp_file: {}", temp_file.as_ref().display());
-            let parent_name = unwrap_os_str!(base.file_name().expect("No filename"));
-            let this_name = unwrap_os_str!(new.file_name().expect("No filename"));
-            let output_file = File::create_buffered(temp_file.as_ref())?;
-            let mut diff_file = DiffFileWriter::new(
-                output_file,
-                Metadata {
-                    diff_count: 0,                /* placeholder */
-                    checksum: Default::default(), /* placeholder */
-                    name: this_name.into(),
-                    parent: parent_name.into(),
-                    creation_time: SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as u64,
-                },
-                collected.clone(),
-            )?;
 
-            let (tx, rx) = sync_channel(1024);
-            info!("Processing {} files...", collected.len());
-
-            let progress = stylized_progress_bar(collected.len() as u64);
-            let handle = spawn(move || {
-                let checksum = Arc::new(Mutex::new(Checksum::new()));
-                collected.into_par_iter().for_each_with(tx, |tx, (x, y)| {
-                    let base_file = base.join(format!("{x}/{y}.png"));
-                    let new_file = new.join(format!("{x}/{y}.png"));
-
-                    let mut base_buf = vec![0_u8; CHUNK_LENGTH];
-                    let mut new_buf = vec![0_u8; CHUNK_LENGTH];
-
-                    if base_file.exists() {
-                        read_png(&base_file, &mut base_buf).unwrap();
-                    }
-                    read_png(&new_file, &mut new_buf).unwrap();
-
-                    checksum.lock().unwrap().add_chunk((x, y), &new_buf);
-
-                    // It's expecting that a large percent of the chunks are not mutated.
-                    // Thus in this case, only computing diff for changed chunks can reduce the process time.
-                    if !base_file.exists() || base_buf != new_buf {
-                        let compressed_diff = diff_png(&mut base_buf, &new_buf).unwrap();
-                        if let Some(b) = compressed_diff {
-                            tx.send((x, y, b)).unwrap();
-                        }
-                    }
-                    progress.inc(1);
-                });
-                progress.finish();
-                Arc::try_unwrap(checksum)
-                    .unwrap_or_else(|_| unreachable!())
-                    .into_inner()
-                    .unwrap()
-                    .compute()
-            });
-
-            let mut diff_counter = 0_u32;
-            for (x, y, diff) in rx {
-                diff_file.add_chunk_diff((x, y), &diff)?;
-                diff_counter += 1;
-            }
-            diff_file.finish(diff_counter, handle.join().unwrap().into())?;
-            temp_file.persist(output)?;
+            do_diff_for_directory(base, new, output)?;
         }
         Commands::Apply {
             base,
@@ -546,4 +480,165 @@ impl DiffFileInfo {
             checksum: format!("{}", blake3::Hash::from_bytes(meta.checksum)),
         }
     }
+}
+
+fn do_diff_for_directory(base: PathBuf, new: PathBuf, output: PathBuf) -> anyhow::Result<()> {
+    info!("Collecting files...");
+    let collected = collect_chunks(&new, None)?;
+
+    info!("Creating diff file...");
+    let mut output_dir = output
+        .parent()
+        .expect("Can not get parent of the output file");
+    if output_dir == Path::new("") {
+        output_dir = Path::new(".");
+    }
+    let temp_file = NamedTempFile::new_in(output_dir)?;
+    debug!("temp_file: {}", temp_file.as_ref().display());
+    let parent_name = unwrap_os_str!(base.file_name().expect("No filename"));
+    let this_name = unwrap_os_str!(new.file_name().expect("No filename"));
+    let output_file = File::create_buffered(temp_file.as_ref())?;
+    let mut diff_file = DiffFileWriter::new(
+        output_file,
+        Metadata {
+            diff_count: 0,                /* placeholder */
+            checksum: Default::default(), /* placeholder */
+            name: this_name.into(),
+            parent: parent_name.into(),
+            creation_time: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+        },
+        collected.clone(),
+    )?;
+
+    let (tx, rx) = sync_channel(1024);
+    info!("Processing {} files...", collected.len());
+
+    let progress = stylized_progress_bar(collected.len() as u64);
+    let handle = spawn(move || {
+        let checksum = Arc::new(Mutex::new(Checksum::new()));
+        collected.into_par_iter().for_each_with(tx, |tx, (x, y)| {
+            let base_file = base.join(format!("{x}/{y}.png"));
+            let new_file = new.join(format!("{x}/{y}.png"));
+
+            let mut base_buf = vec![0_u8; CHUNK_LENGTH];
+            let mut new_buf = vec![0_u8; CHUNK_LENGTH];
+
+            if base_file.exists() {
+                read_png(&base_file, &mut base_buf).unwrap();
+            }
+            read_png(&new_file, &mut new_buf).unwrap();
+
+            checksum.lock().unwrap().add_chunk((x, y), &new_buf);
+
+            // It's expecting that a large percent of the chunks are not mutated.
+            // Thus in this case, only computing diff for changed chunks can reduce the process time.
+            if !base_file.exists() || base_buf != new_buf {
+                let compressed_diff = diff_png(&mut base_buf, &new_buf).unwrap();
+                if let Some(b) = compressed_diff {
+                    tx.send((x, y, b)).unwrap();
+                }
+            }
+            progress.inc(1);
+        });
+        progress.finish();
+        Arc::try_unwrap(checksum)
+            .unwrap_or_else(|_| unreachable!())
+            .into_inner()
+            .unwrap()
+            .compute()
+    });
+
+    let mut diff_counter = 0_u32;
+    for (x, y, diff) in rx {
+        diff_file.add_chunk_diff((x, y), &diff)?;
+        diff_counter += 1;
+    }
+    diff_file.finish(diff_counter, handle.join().unwrap().into())?;
+    temp_file.persist(output)?;
+    Ok(())
+}
+
+fn do_diff_for_tar(base: PathBuf, new: PathBuf, output: PathBuf) -> anyhow::Result<()> {
+    info!("Indexing 'base' tarball...");
+    let base_tar = ChunksTarReader::open_with_index(&base)?;
+    info!("Indexing 'new' tarball...");
+    let new_tar = ChunksTarReader::open_with_index(&new)?;
+
+    info!("Creating diff file...");
+    let mut output_dir = output
+        .parent()
+        .expect("Can not get parent of the output file");
+    if output_dir == Path::new("") {
+        output_dir = Path::new(".");
+    }
+    let temp_file = NamedTempFile::new_in(output_dir)?;
+    debug!("temp_file: {}", temp_file.as_ref().display());
+    let output_file = File::create_buffered(temp_file.as_ref())?;
+    let mut diff_file = DiffFileWriter::new(
+        output_file,
+        Metadata {
+            diff_count: 0,                /* placeholder */
+            checksum: Default::default(), /* placeholder */
+            name: new_tar.root_name.clone(),
+            parent: base_tar.root_name.clone(),
+            creation_time: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+        },
+        new_tar.map.keys().map(|x| *x).collect::<Vec<_>>(),
+    )?;
+
+    let (tx, rx) = sync_channel(1024);
+    info!("Processing {} files...", new_tar.map.len());
+
+    let progress = stylized_progress_bar(new_tar.map.len() as u64);
+    let handle = spawn(move || {
+        let checksum = Arc::new(Mutex::new(Checksum::new()));
+        new_tar
+            .map
+            .keys()
+            .into_iter()
+            .par_bridge()
+            .for_each_with(tx, |tx, &(x, y)| {
+                let mut base_buf = vec![0_u8; CHUNK_LENGTH];
+                let mut new_buf = vec![0_u8; CHUNK_LENGTH];
+
+                let base_chunk_reader = base_tar.open_chunk((x, y));
+                let base_chunk_present = base_chunk_reader.is_some();
+                if let Some(r) = base_chunk_reader {
+                    read_png_reader(r.unwrap(), &mut base_buf).unwrap();
+                }
+                let new_chunk_reader = new_tar.open_chunk((x, y)).unwrap().unwrap();
+                read_png_reader(new_chunk_reader, &mut new_buf).unwrap();
+
+                checksum.lock().unwrap().add_chunk((x, y), &new_buf);
+
+                if !base_chunk_present || base_buf != new_buf {
+                    let compressed_diff = diff_png(&mut base_buf, &new_buf).unwrap();
+                    if let Some(b) = compressed_diff {
+                        tx.send((x, y, b)).unwrap();
+                    }
+                }
+                progress.inc(1);
+            });
+        progress.finish();
+        Arc::try_unwrap(checksum)
+            .unwrap_or_else(|_| unreachable!())
+            .into_inner()
+            .unwrap()
+            .compute()
+    });
+
+    let mut diff_counter = 0_u32;
+    for (x, y, diff) in rx {
+        diff_file.add_chunk_diff((x, y), &diff)?;
+        diff_counter += 1;
+    }
+    diff_file.finish(diff_counter, handle.join().unwrap().into())?;
+    temp_file.persist(output)?;
+    Ok(())
 }

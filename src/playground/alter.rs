@@ -1,29 +1,17 @@
 #![feature(file_buffered)]
 
-use lazy_regex::regex;
 use std::fs::File;
 use std::path::Path;
 use rayon::prelude::*;
 use wplace_tools::diff_file::{DiffFileReader, DiffFileWriter};
+use wplace_tools::extract_datetime;
 
 fn alter_names(path: impl AsRef<Path>, output: impl AsRef<Path>) -> anyhow::Result<()> {
     let diff_file = DiffFileReader::new(File::open_buffered(path)?)?;
 
-    let extract = |name: &str| {
-        let regex = regex!(r"(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z)");
-        regex
-            .captures_iter(name)
-            .next()
-            .unwrap()
-            .get(1)
-            .unwrap()
-            .as_str()
-            .to_string()
-    };
-
     let mut new_metadata = diff_file.metadata.clone();
-    new_metadata.name = extract(&diff_file.metadata.name).into();
-    new_metadata.parent = extract(&diff_file.metadata.parent).into();
+    new_metadata.name = extract_datetime(&diff_file.metadata.name).into();
+    new_metadata.parent = extract_datetime(&diff_file.metadata.parent).into();
 
     let mut writer = DiffFileWriter::new(
         File::create_buffered(output)?,

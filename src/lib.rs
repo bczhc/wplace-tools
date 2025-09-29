@@ -14,6 +14,7 @@ use pathdiff::diff_paths;
 use std::env::set_var;
 use std::path::{Path, PathBuf};
 use std::{env, fs};
+use lazy_regex::regex;
 use walkdir::WalkDir;
 
 pub const CHUNK_LENGTH: usize = 1_000_000;
@@ -185,4 +186,19 @@ pub fn set_up_logger() {
 
 pub macro unwrap_os_str($x:expr) {
     $x.to_str().expect("Invalid UTF-8")
+}
+
+pub fn extract_datetime(s: &str) -> String {
+    let extract = |name: &str| {
+        let regex = regex!(r"(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z)");
+        regex
+            .captures_iter(name)
+            .next()
+            .unwrap()
+            .get(1)
+            .unwrap()
+            .as_str()
+            .to_string()
+    };
+    extract(s)
 }
