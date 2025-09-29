@@ -1,33 +1,38 @@
 #![feature(decl_macro)]
 #![feature(file_buffered)]
 #![feature(likely_unlikely)]
+#![feature(yeet_expr)]
 
 use crate::cli::Commands;
 use chrono::{Local, TimeZone};
 use clap::Parser;
-use flate2::{Compression, write};
+use flate2::{write, Compression};
 use log::{debug, error, info};
 use rayon::prelude::*;
+use serde::Serialize;
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::fs::File;
-use std::io::{BufWriter, Cursor, Read, Write};
+use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::Path;
+use std::process::abort;
 use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
 use std::thread::spawn;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, hint};
-use std::process::abort;
-use serde::Serialize;
 use tempfile::NamedTempFile;
 use wplace_tools::checksum::Checksum;
 use wplace_tools::diff_file::{DiffFileReader, DiffFileWriter, Metadata};
-use wplace_tools::indexed_png::{read_png, write_chunk_png};
+use wplace_tools::indexed_png::{read_png, read_png_reader, write_chunk_png};
+use wplace_tools::tar::ChunksTarReader;
+use wplace_tools::zip::ChunksZipReader;
 use wplace_tools::{
-    CHUNK_LENGTH, ChunkNumber, MUTATION_MASK, PALETTE_INDEX_MASK, collect_chunks, new_chunk_file,
-    set_up_logger, stylized_progress_bar, unwrap_os_str,
+    collect_chunks, new_chunk_file, set_up_logger, stylized_progress_bar, unwrap_os_str, ChunkNumber,
+    CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK,
 };
+use yeet_ops::yeet;
 
 mod cli {
     use clap::{Args, Parser, Subcommand, ValueHint};
@@ -188,7 +193,9 @@ fn main() -> anyhow::Result<()> {
             let collected = collect_chunks(&new, None)?;
 
             info!("Creating diff file...");
-            let mut output_dir = output.parent().expect("Can not get parent of the output file");
+            let mut output_dir = output
+                .parent()
+                .expect("Can not get parent of the output file");
             if output_dir == Path::new("") {
                 output_dir = Path::new(".");
             }
@@ -381,14 +388,29 @@ fn main() -> anyhow::Result<()> {
         }
 
         Commands::Checksum { archive } => {
-            info!("Collecting files...");
-            let collected = collect_chunks(&archive, None)?;
-            info!("Computing checksum...");
-            let hash = checksum_with_progress(&collected, archive);
-            println!("{}", hash);
+            if archive.is_file() {
+                let file_ext = archive.extension();
+                match file_ext {
+                    Some(x) if x == OsStr::new("tar") => {
+                        checksum_tar(&archive)?;
+                    }
+                    Some(x) if x == OsStr::new("zip") => {
+                        checksum_zip(&archive)?;
+                    }
+                    _ => {
+                        yeet!(anyhow::anyhow!("Unknown extension: {:?}", file_ext));
+                    }
+                }
+            } else {
+                info!("Collecting files...");
+                let collected = collect_chunks(&archive, None)?;
+                info!("Computing checksum...");
+                let hash = checksum_with_progress(&collected, archive);
+                println!("{}", hash);
+            }
         }
 
-        Commands::Show { diff,json } => {
+        Commands::Show { diff, json } => {
             let reader = DiffFileReader::new(File::open_buffered(&diff)?)?;
             if json {
                 let info = DiffFileInfo::new(&reader);
@@ -422,6 +444,63 @@ fn checksum_with_progress(chunks: &[ChunkNumber], archive_path: impl AsRef<Path>
         .into_inner()
         .unwrap()
         .compute()
+}
+
+fn checksum_tar(path: impl AsRef<Path>) -> anyhow::Result<()> {
+    let path = path.as_ref();
+    let mut reader = ChunksTarReader::open_with_index(path)?;
+    let map = &reader.map;
+    let progress = stylized_progress_bar(map.len() as _);
+    let checksum = Arc::new(Mutex::new(Checksum::new()));
+
+    map.into_iter().par_bridge().for_each(|(&n, range)| {
+        let reader = reader.open_chunk(n).unwrap().unwrap();
+        let mut buf = vec![0_u8; CHUNK_LENGTH];
+        read_png_reader(reader, &mut buf).unwrap();
+        checksum.lock().unwrap().add_chunk(n, &buf);
+        progress.inc(1);
+    });
+    progress.finish();
+
+    println!(
+        "{}",
+        Arc::try_unwrap(checksum)
+            .ok()
+            .unwrap()
+            .into_inner()
+            .unwrap()
+            .compute()
+    );
+    Ok(())
+}
+
+fn checksum_zip(path: impl AsRef<Path>) -> anyhow::Result<()> {
+    let path = path.as_ref();
+    let reader = ChunksZipReader::open(path)?;
+    let progress = stylized_progress_bar(reader.map.len() as _);
+    let checksum = Arc::new(Mutex::new(Checksum::new()));
+
+    reader.map.into_iter().par_bridge().for_each(|(n, range)| {
+        let mut file = File::open_buffered(path).unwrap();
+        file.seek(SeekFrom::Start(range.0)).unwrap();
+        let take = file.take(range.1);
+        let mut buf = vec![0_u8; CHUNK_LENGTH];
+        read_png_reader(take, &mut buf).unwrap();
+        checksum.lock().unwrap().add_chunk(n, &buf);
+        progress.inc(1);
+    });
+    progress.finish();
+
+    println!(
+        "{}",
+        Arc::try_unwrap(checksum)
+            .ok()
+            .unwrap()
+            .into_inner()
+            .unwrap()
+            .compute()
+    );
+    Ok(())
 }
 
 fn print_diff_info(reader: &DiffFileReader<impl Read>) {

@@ -30,6 +30,7 @@ lazy-regex = "3.4.1"
 tempfile = "3.23.0"
 serde_json = "1.0.145"
 serde = { version = "1.0.228", features = ["derive"] }
+tar = "0.4.44"
 
 [[bin]]
 name = "archive-tool"
@@ -54,3 +55,7 @@ path = "src/playground/zip.rs"
 [[bin]]
 name = "alter"
 path = "src/playground/alter.rs"
+
+[[bin]]
+name = "tar"
+path = "src/playground/tar.rs"

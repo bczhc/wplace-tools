@@ -6,6 +6,8 @@
 pub mod checksum;
 pub mod diff_file;
 pub mod indexed_png;
+pub mod zip;
+pub mod tar;
 
 use indicatif::{ProgressBar, ProgressStyle};
 use pathdiff::diff_paths;
