@@ -31,31 +31,3 @@ tempfile = "3.23.0"
 serde_json = "1.0.145"
 serde = { version = "1.0.228", features = ["derive"] }
 tar = "0.4.44"
-
-[[bin]]
-name = "archive-tool"
-path = "src/archive_tool.rs"
-
-[[bin]]
-name = "find-full-color-chunks"
-path = "src/playground/find_full_color_chunks.rs"
-
-[[bin]]
-name = "diff-size-of-chunks-changed"
-path = "src/playground/diff_size_of_chunks_changed.rs"
-
-[[bin]]
-name = "base63"
-path = "src/playground/base63.rs"
-
-[[bin]]
-name = "zip"
-path = "src/playground/zip.rs"
-
-[[bin]]
-name = "alter"
-path = "src/playground/alter.rs"
-
-[[bin]]
-name = "tar"
-path = "src/playground/tar.rs"
