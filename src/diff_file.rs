@@ -40,7 +40,7 @@
 //!     ├── chunk0_x : u16
 //!     ├── chunk1_y : u16
 //!     ├── diff_data_length : u32
-//!     ├── diff_data : [u8; diff_daa_length]
+//!     ├── diff_data : [u8; diff_data_length]
 //!     ├── chunk1_x : u16
 //!     ├── chunk2_y : u16
 //!     ├── diff_data_length : u32
