@@ -58,6 +58,14 @@ mod cli {
 
             #[arg(value_name = "OUTPUT", value_hint = ValueHint::FilePath)]
             output: PathBuf,
+
+            /// Name of the `new` archive
+            #[arg(long)]
+            name: Option<String>,
+
+            /// Name of the `base` archive
+            #[arg(long)]
+            parent_name: Option<String>,
         },
 
         /// Apply diff on `base`.
@@ -189,16 +197,22 @@ fn main() -> anyhow::Result<()> {
     set_up_logger();
     let args = cli::Cli::parse();
     match args.command {
-        Commands::Diff { base, new, output } => {
+        Commands::Diff {
+            base,
+            new,
+            output,
+            name,
+            parent_name,
+        } => {
             // a special handle for directly processing tar files
             if base.extension() == Some(OsStr::new("tar"))
                 && new.extension() == Some(OsStr::new("tar"))
             {
-                do_diff_for_tar(base, new, output)?;
+                do_diff_for_tar(base, new, output, name, parent_name)?;
                 return Ok(());
             }
 
-            do_diff_for_directory(base, new, output)?;
+            do_diff_for_directory(base, new, output, name, parent_name)?;
         }
         Commands::Apply {
             base,
@@ -482,7 +496,13 @@ impl DiffFileInfo {
     }
 }
 
-fn do_diff_for_directory(base: PathBuf, new: PathBuf, output: PathBuf) -> anyhow::Result<()> {
+fn do_diff_for_directory(
+    base: PathBuf,
+    new: PathBuf,
+    output: PathBuf,
+    name: Option<String>,
+    parent_name: Option<String>,
+) -> anyhow::Result<()> {
     info!("Collecting files...");
     let collected = collect_chunks(&new, None)?;
 
@@ -495,16 +515,16 @@ fn do_diff_for_directory(base: PathBuf, new: PathBuf, output: PathBuf) -> anyhow
     }
     let temp_file = NamedTempFile::new_in(output_dir)?;
     debug!("temp_file: {}", temp_file.as_ref().display());
-    let parent_name = unwrap_os_str!(base.file_name().expect("No filename"));
-    let this_name = unwrap_os_str!(new.file_name().expect("No filename"));
     let output_file = File::create_buffered(temp_file.as_ref())?;
     let mut diff_file = DiffFileWriter::new(
         output_file,
         Metadata {
             diff_count: 0,                /* placeholder */
             checksum: Default::default(), /* placeholder */
-            name: this_name.into(),
-            parent: parent_name.into(),
+            name: name
+                .unwrap_or_else(|| unwrap_os_str!(new.file_name().expect("No filename")).into()),
+            parent: parent_name
+                .unwrap_or_else(|| unwrap_os_str!(base.file_name().expect("No filename")).into()),
             creation_time: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -561,7 +581,13 @@ fn do_diff_for_directory(base: PathBuf, new: PathBuf, output: PathBuf) -> anyhow
     Ok(())
 }
 
-fn do_diff_for_tar(base: PathBuf, new: PathBuf, output: PathBuf) -> anyhow::Result<()> {
+fn do_diff_for_tar(
+    base: PathBuf,
+    new: PathBuf,
+    output: PathBuf,
+    name: Option<String>,
+    parent_name: Option<String>,
+) -> anyhow::Result<()> {
     info!("Indexing 'base' tarball...");
     let base_tar = ChunksTarReader::open_with_index(&base)?;
     info!("Indexing 'new' tarball...");
@@ -582,8 +608,8 @@ fn do_diff_for_tar(base: PathBuf, new: PathBuf, output: PathBuf) -> anyhow::Resu
         Metadata {
             diff_count: 0,                /* placeholder */
             checksum: Default::default(), /* placeholder */
-            name: new_tar.root_name.clone(),
-            parent: base_tar.root_name.clone(),
+            name: name.unwrap_or_else(|| new_tar.root_name.clone()),
+            parent: parent_name.unwrap_or_else(|| base_tar.root_name.clone()),
             creation_time: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
