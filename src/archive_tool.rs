@@ -2,6 +2,7 @@
 #![feature(file_buffered)]
 #![feature(likely_unlikely)]
 #![feature(yeet_expr)]
+#![feature(generic_arg_infer)]
 
 use crate::cli::Commands;
 use chrono::{Local, TimeZone};
@@ -232,8 +233,7 @@ fn main() -> anyhow::Result<()> {
                 apply_png(
                     base_file,
                     output_file,
-                    &raw_diff
-                        .try_into()
+                    <&[_; _]>::try_from(&raw_diff[..])
                         .expect("Raw diff data length is expected to be 1_000_000"),
                 )
                 .unwrap();
