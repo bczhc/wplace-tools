@@ -31,3 +31,4 @@ tempfile = "3.23.0"
 serde_json = "1.0.145"
 serde = { version = "1.0.228", features = ["derive"] }
 tar = "0.4.44"
+crc = "3.3.0"

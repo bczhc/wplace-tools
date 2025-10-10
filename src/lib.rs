@@ -2,20 +2,23 @@
 #![feature(yeet_expr)]
 #![feature(decl_macro)]
 #![feature(try_blocks)]
+#![feature(likely_unlikely)]
 
 pub mod checksum;
 pub mod diff_file;
 pub mod indexed_png;
 pub mod zip;
 pub mod tar;
+pub mod diff2;
 
 use indicatif::{ProgressBar, ProgressStyle};
 use pathdiff::diff_paths;
 use std::env::set_var;
 use std::path::{Path, PathBuf};
-use std::{env, fs};
+use std::{env, fs, hint};
 use lazy_regex::regex;
 use walkdir::WalkDir;
+use crate::indexed_png::{read_png, write_chunk_png};
 
 pub const CHUNK_LENGTH: usize = 1_000_000;
 pub const MUTATION_MASK: u8 = 0b0100_0000;
@@ -201,4 +204,36 @@ pub fn extract_datetime(s: &str) -> String {
             .to_string()
     };
     extract(s)
+}
+
+#[inline(always)]
+pub fn apply_png(
+    base: impl AsRef<Path>,
+    output: impl AsRef<Path>,
+    diff_data: &[u8; CHUNK_LENGTH],
+) -> anyhow::Result<()> {
+    let mut base_buf = vec![0_u8; CHUNK_LENGTH];
+
+    if base.as_ref().exists() {
+        read_png(base, &mut base_buf)?;
+    }
+
+    apply_chunk(&mut base_buf, diff_data);
+
+    write_chunk_png(output, &base_buf)?;
+
+    Ok(())
+}
+
+#[inline(always)]
+pub fn apply_chunk(
+    base: &mut [u8],
+    diff_data: &[u8; CHUNK_LENGTH]
+) {
+    for (base_pix, diff_pix) in base.iter_mut().zip(diff_data) {
+        if hint::unlikely(diff_pix & MUTATION_MASK == MUTATION_MASK) {
+            // has mutation flag - apply the pixel
+            *base_pix = diff_pix & PALETTE_INDEX_MASK;
+        }
+    }
 }

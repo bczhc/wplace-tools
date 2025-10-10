@@ -2,6 +2,7 @@ use crate::{CHUNK_LENGTH, ChunkNumber};
 use blake3::Hash;
 use byteorder::{ByteOrder, LE};
 use std::cmp::Ordering;
+use crc::Crc;
 
 #[derive(Default)]
 pub struct Checksum {
@@ -37,3 +38,5 @@ impl Checksum {
         hasher.finalize()
     }
 }
+
+pub static CRC32: Crc<u32> = Crc::<u32>::new(&crc::CRC_32_CKSUM);

@@ -29,10 +29,7 @@ use wplace_tools::diff_file::{DiffFileReader, DiffFileWriter, Metadata};
 use wplace_tools::indexed_png::{read_png, read_png_reader, write_chunk_png};
 use wplace_tools::tar::ChunksTarReader;
 use wplace_tools::zip::ChunksZipReader;
-use wplace_tools::{
-    collect_chunks, extract_datetime, new_chunk_file, set_up_logger, stylized_progress_bar, unwrap_os_str,
-    ChunkNumber, CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK,
-};
+use wplace_tools::{apply_png, collect_chunks, extract_datetime, new_chunk_file, set_up_logger, stylized_progress_bar, unwrap_os_str, ChunkNumber, CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK};
 use yeet_ops::yeet;
 
 mod cli {
@@ -163,30 +160,6 @@ fn diff_png(base_buf: &mut [u8], new_buf: &[u8]) -> anyhow::Result<Option<Vec<u8
         write::DeflateEncoder::new(Cursor::new(Vec::new()), Compression::default());
     compressor.write_all(base_buf)?;
     Ok(Some(compressor.finish()?.into_inner()))
-}
-
-#[inline(always)]
-fn apply_png(
-    base: impl AsRef<Path>,
-    output: impl AsRef<Path>,
-    diff_data: &[u8; CHUNK_LENGTH],
-) -> anyhow::Result<()> {
-    let mut base_buf = vec![0_u8; CHUNK_LENGTH];
-
-    if base.as_ref().exists() {
-        read_png(base, &mut base_buf)?;
-    }
-
-    for (base_pix, diff_pix) in base_buf.iter_mut().zip(diff_data) {
-        if hint::unlikely(diff_pix & MUTATION_MASK == MUTATION_MASK) {
-            // has mutation flag - apply the pixel
-            *base_pix = diff_pix & PALETTE_INDEX_MASK;
-        }
-    }
-
-    write_chunk_png(output, &base_buf)?;
-
-    Ok(())
 }
 
 thread_local! {
