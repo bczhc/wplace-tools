@@ -3,6 +3,7 @@
 #![feature(likely_unlikely)]
 #![feature(yeet_expr)]
 #![feature(generic_arg_infer)]
+#![feature(try_blocks)]
 
 use crate::cli::Commands;
 use chrono::{Local, TimeZone};
@@ -17,19 +18,24 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::process::abort;
+use std::process::{abort, exit};
 use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
 use std::thread::spawn;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, hint};
+use crc_fast::CrcAlgorithm;
 use tempfile::NamedTempFile;
-use wplace_tools::checksum::Checksum;
-use wplace_tools::diff_file::{DiffFileReader, DiffFileWriter, Metadata};
+use wplace_tools::checksum::{chunk_checksum};
+use wplace_tools::diff2::{DiffDataRange, Metadata};
 use wplace_tools::indexed_png::{read_png, read_png_reader, write_chunk_png};
 use wplace_tools::tar::ChunksTarReader;
 use wplace_tools::zip::ChunksZipReader;
-use wplace_tools::{apply_png, collect_chunks, extract_datetime, new_chunk_file, set_up_logger, stylized_progress_bar, unwrap_os_str, ChunkNumber, CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK};
+use wplace_tools::{
+    apply_png, collect_chunks, diff2, extract_datetime, new_chunk_file, open_file_range, set_up_logger,
+    stylized_progress_bar, unwrap_os_str, ChunkNumber, CHUNK_LENGTH, MUTATION_MASK,
+    PALETTE_INDEX_MASK,
+};
 use yeet_ops::yeet;
 
 mod cli {
@@ -55,14 +61,6 @@ mod cli {
 
             #[arg(value_name = "OUTPUT", value_hint = ValueHint::FilePath)]
             output: PathBuf,
-
-            /// Name of the `new` archive
-            #[arg(long)]
-            name: Option<String>,
-
-            /// Name of the `base` archive
-            #[arg(long)]
-            parent_name: Option<String>,
         },
 
         /// Apply diff on `base`.
@@ -75,10 +73,6 @@ mod cli {
 
             #[arg(value_name = "OUTPUT", value_hint = ValueHint::FilePath)]
             output: PathBuf,
-
-            /// Do not verify the checksum.
-            #[arg(long, default_value = "false")]
-            no_checksum: bool,
         },
 
         /// Compare two archives. This is used to verify if a diff-apply pipeline works correctly.
@@ -102,19 +96,10 @@ mod cli {
             tiles_range_arg: TilesRangeArg,
         },
 
-        /// Compute the checksum of an archive.
-        Checksum {
-            #[arg(value_hint = ValueHint::FilePath)]
-            archive: PathBuf,
-        },
-
         /// Print info of the diff file.
         Show {
             #[arg(value_hint = ValueHint::FilePath)]
             diff: PathBuf,
-            /// Output as JSON format.
-            #[arg(long)]
-            json: bool,
         },
     }
 
@@ -143,9 +128,9 @@ fn compare_png(base: impl AsRef<Path>, new: impl AsRef<Path>) -> anyhow::Result<
     Ok(img1 == img2)
 }
 
-/// Returns raw diff between two images. None is for identical images.
+/// Returns compressed diff between two images.
 #[inline(always)]
-fn diff_png(base_buf: &mut [u8], new_buf: &[u8]) -> anyhow::Result<Option<Vec<u8>>> {
+fn diff_png_compressed(base_buf: &mut [u8], new_buf: &[u8]) -> anyhow::Result<Vec<u8>> {
     for x in base_buf.iter_mut().zip(new_buf) {
         let i1 = *x.0 & PALETTE_INDEX_MASK;
         let i2 = x.1 & PALETTE_INDEX_MASK;
@@ -159,7 +144,7 @@ fn diff_png(base_buf: &mut [u8], new_buf: &[u8]) -> anyhow::Result<Option<Vec<u8
     let mut compressor =
         write::DeflateEncoder::new(Cursor::new(Vec::new()), Compression::default());
     compressor.write_all(base_buf)?;
-    Ok(Some(compressor.finish()?.into_inner()))
+    Ok(compressor.finish()?.into_inner())
 }
 
 thread_local! {
@@ -174,91 +159,100 @@ fn main() -> anyhow::Result<()> {
             base,
             new,
             output,
-            name,
-            parent_name,
         } => {
             // a special handle for directly processing tar files
             if base.extension() == Some(OsStr::new("tar"))
                 && new.extension() == Some(OsStr::new("tar"))
             {
-                do_diff_for_tar(base, new, output, name, parent_name)?;
+                do_diff_for_tar(base, new, output)?;
                 return Ok(());
             }
 
-            do_diff_for_directory(base, new, output, name, parent_name)?;
+            do_diff_for_directory(base, new, output)?;
         }
         Commands::Apply {
             base,
             diff,
             output,
-            no_checksum,
         } => {
             info!("Opening diff file...");
-            let diff_file = DiffFileReader::new(File::open_buffered(&diff)?)?;
-            let index = diff_file.index.clone();
-            let index_length = index.len();
-            let metadata = &diff_file.metadata;
-            let checksum = metadata.checksum;
-            let changed_chunks = Arc::new(Mutex::new(HashSet::new()));
-            print_diff_info(&diff_file);
+            let mut diff_file = diff2::DiffFile::open(File::open_buffered(&diff)?)?;
+            let index = diff_file.read_index()?;
+            // process them separately (with two separate progress bar)
+            let changed_chunks = index
+                .iter()
+                .filter(|x| x.1.diff_data_range.is_changed())
+                .collect::<Vec<_>>();
+            let unchanged_chunks = index
+                .iter()
+                .filter(|x| !x.1.diff_data_range.is_changed())
+                .collect::<Vec<_>>();
 
-            info!("Applying diff to {} chunks...", metadata.diff_count);
-            let progress = stylized_progress_bar(metadata.diff_count as u64);
+            info!("Applying diff to {} chunks...", changed_chunks.len());
+            let progress = stylized_progress_bar(changed_chunks.len() as u64);
 
-            let iter = diff_file.chunk_diff_iter();
-            iter.into_iter().par_bridge().for_each(|x| {
-                let x = x.unwrap();
-                let chunk_x = x.0.0;
-                let chunk_y = x.0.1;
-                let mut raw_diff: Vec<u8> = Vec::with_capacity(CHUNK_LENGTH);
-                let mut decompressor = write::DeflateDecoder::new(&mut raw_diff);
-                decompressor.write_all(&x.1).unwrap();
-                decompressor.finish().unwrap();
+            changed_chunks.into_iter().par_bridge().for_each(|x| {
+                let result: anyhow::Result<()> = try {
+                    let chunk_x = x.0.0;
+                    let chunk_y = x.0.1;
+                    let entry = x.1;
 
-                let base_file = base.join(format!("{chunk_x}/{chunk_y}.png"));
-                let output_file = new_chunk_file(&output, (chunk_x, chunk_y), "png");
-                apply_png(
-                    base_file,
-                    output_file,
-                    <&[_; _]>::try_from(&raw_diff[..])
-                        .expect("Raw diff data length is expected to be 1_000_000"),
-                )
-                .unwrap();
-                changed_chunks.lock().unwrap().insert((chunk_x, chunk_y));
-                progress.inc(1);
+                    match entry.diff_data_range {
+                        DiffDataRange::Changed { pos, len } => {
+                            let diff_reader = open_file_range(&diff, pos, len)?;
+                            let mut decompressor = flate2::read::DeflateDecoder::new(diff_reader);
+                            let mut raw_diff = vec![0_u8; CHUNK_LENGTH];
+                            decompressor.read_exact(&mut raw_diff)?;
+
+                            let base_file = base.join(format!("{chunk_x}/{chunk_y}.png"));
+                            let output_file = new_chunk_file(&output, (chunk_x, chunk_y), "png");
+                            apply_png(
+                                base_file,
+                                output_file,
+                                <&[_; _]>::try_from(&raw_diff[..])
+                                    .expect("Raw diff data length is expected to be 1_000_000"),
+                                entry.checksum
+                            )?;
+                            progress.inc(1);
+                        }
+                        DiffDataRange::Unchanged => {
+                            // changed_chunks is filtered
+                            unreachable!()
+                        }
+                    }
+                };
+                if let Err(e) = result {
+                        error!("Fatal error on applying diff: {e}");
+                        abort();
+                }
             });
             progress.finish();
 
             info!("Copying unchanged chunks...");
-            let changed_chunks = Arc::try_unwrap(changed_chunks)
-                .unwrap()
-                .into_inner()
-                .unwrap();
-            let progress = stylized_progress_bar(index_length as u64 - changed_chunks.len() as u64);
+            let progress = stylized_progress_bar(unchanged_chunks.len() as u64);
 
-            index.iter().par_bridge().for_each(|&(chunk_x, chunk_y)| {
-                if !changed_chunks.contains(&(chunk_x, chunk_y)) {
-                    // chunks that are in the archive index but don't have their diff data
-                    // are unchanged
-                    if let Err(e) = fs::copy(
-                        base.join(format!("{chunk_x}/{chunk_y}.png")),
-                        new_chunk_file(&output, (chunk_x, chunk_y), "png"),
-                    ) {
-                        error!("Failed to copy: {}; abort", e);
-                        abort();
-                    };
-                    progress.inc(1);
+            unchanged_chunks.into_iter().par_bridge().for_each(|x| {
+                let entry = x.1;
+                let chunk_x = x.0.0;
+                let chunk_y = x.0.1;
+
+                match entry.diff_data_range {
+                    DiffDataRange::Unchanged => {
+                        if let Err(e) = fs::copy(
+                            base.join(format!("{chunk_x}/{chunk_y}.png")),
+                            new_chunk_file(&output, (chunk_x, chunk_y), "png"),
+                        ) {
+                            error!("Failed to copy: {}; abort", e);
+                            abort();
+                        };
+                        progress.inc(1);
+                    }
+                    DiffDataRange::Changed { .. } => {
+                        unreachable!()
+                    }
                 }
             });
             progress.finish();
-
-            if !no_checksum {
-                info!("Checksum validation...");
-                let computed = checksum_with_progress(&index, &output);
-                if &checksum != computed.as_bytes() {
-                    return Err(anyhow::anyhow!("Checksum mismatch!"));
-                }
-            }
         }
         Commands::Compare { base, new } => {
             info!("Collecting files 'base'...");
@@ -308,140 +302,25 @@ fn main() -> anyhow::Result<()> {
             progress.finish();
         }
 
-        Commands::Checksum { archive } => {
-            if archive.is_file() {
-                let file_ext = archive.extension();
-                match file_ext {
-                    Some(x) if x == OsStr::new("tar") => {
-                        checksum_tar(&archive)?;
-                    }
-                    Some(x) if x == OsStr::new("zip") => {
-                        checksum_zip(&archive)?;
-                    }
-                    _ => {
-                        yeet!(anyhow::anyhow!("Unknown extension: {:?}", file_ext));
-                    }
-                }
-            } else {
-                info!("Collecting files...");
-                let collected = collect_chunks(&archive, None)?;
-                info!("Computing checksum...");
-                let hash = checksum_with_progress(&collected, archive);
-                println!("{}", hash);
-            }
-        }
-
-        Commands::Show { diff, json } => {
-            let reader = DiffFileReader::new(File::open_buffered(&diff)?)?;
-            if json {
-                let info = DiffFileInfo::new(&reader);
-                println!("{}", serde_json::to_string(&info).unwrap());
-            } else {
-                print_diff_info(&reader);
-            }
+        Commands::Show { diff } => {
+            let mut reader = diff2::DiffFile::open(File::open_buffered(&diff)?)?;
+            println!(
+                "Metadata: {}",
+                serde_json::to_string(&reader.metadata).unwrap()
+            );
+            let index = reader.read_index()?;
+            println!("Total chunks: {}", index.len());
+            println!(
+                "Changed chunks: {}",
+                index
+                    .iter()
+                    .filter(|x| x.1.diff_data_range.is_changed())
+                    .count()
+            );
         }
     }
 
     Ok(())
-}
-
-fn checksum_with_progress(chunks: &[ChunkNumber], archive_path: impl AsRef<Path>) -> blake3::Hash {
-    let progress = stylized_progress_bar(chunks.len() as u64);
-    let archive_path = archive_path.as_ref();
-
-    let checksum = Arc::new(Mutex::new(Checksum::new()));
-    chunks.iter().par_bridge().for_each(|&(x, y)| {
-        let chunk_file = archive_path.join(format!("{x}/{y}.png"));
-        let mut chunk_buf = vec![0_u8; CHUNK_LENGTH];
-        read_png(chunk_file, &mut chunk_buf).unwrap();
-        checksum.lock().unwrap().add_chunk((x, y), &chunk_buf);
-
-        progress.inc(1);
-    });
-    progress.finish();
-    Arc::try_unwrap(checksum)
-        .ok()
-        .unwrap()
-        .into_inner()
-        .unwrap()
-        .compute()
-}
-
-fn checksum_tar(path: impl AsRef<Path>) -> anyhow::Result<()> {
-    let path = path.as_ref();
-    let mut reader = ChunksTarReader::open_with_index(path)?;
-    let map = &reader.map;
-    let progress = stylized_progress_bar(map.len() as _);
-    let checksum = Arc::new(Mutex::new(Checksum::new()));
-
-    map.into_iter().par_bridge().for_each(|(&n, range)| {
-        let reader = reader.open_chunk(n).unwrap().unwrap();
-        let mut buf = vec![0_u8; CHUNK_LENGTH];
-        read_png_reader(reader, &mut buf).unwrap();
-        checksum.lock().unwrap().add_chunk(n, &buf);
-        progress.inc(1);
-    });
-    progress.finish();
-
-    println!(
-        "{}",
-        Arc::try_unwrap(checksum)
-            .ok()
-            .unwrap()
-            .into_inner()
-            .unwrap()
-            .compute()
-    );
-    Ok(())
-}
-
-fn checksum_zip(path: impl AsRef<Path>) -> anyhow::Result<()> {
-    let path = path.as_ref();
-    let reader = ChunksZipReader::open(path)?;
-    let progress = stylized_progress_bar(reader.map.len() as _);
-    let checksum = Arc::new(Mutex::new(Checksum::new()));
-
-    reader.map.into_iter().par_bridge().for_each(|(n, range)| {
-        let mut file = File::open_buffered(path).unwrap();
-        file.seek(SeekFrom::Start(range.0)).unwrap();
-        let take = file.take(range.1);
-        let mut buf = vec![0_u8; CHUNK_LENGTH];
-        read_png_reader(take, &mut buf).unwrap();
-        checksum.lock().unwrap().add_chunk(n, &buf);
-        progress.inc(1);
-    });
-    progress.finish();
-
-    println!(
-        "{}",
-        Arc::try_unwrap(checksum)
-            .ok()
-            .unwrap()
-            .into_inner()
-            .unwrap()
-            .compute()
-    );
-    Ok(())
-}
-
-fn print_diff_info(reader: &DiffFileReader<impl Read>) {
-    let meta = &reader.metadata;
-    println!(
-        "Creation time: {}
-Archive name: {}
-Parent name: {}
-Total chunks: {}
-Changed chunks: {}
-Checksum: {}",
-        Local
-            .timestamp_millis_opt(meta.creation_time as i64)
-            .unwrap(),
-        meta.name,
-        meta.parent,
-        reader.index.len(),
-        meta.diff_count,
-        blake3::Hash::from_bytes(meta.checksum)
-    )
 }
 
 #[derive(Serialize)]
@@ -455,26 +334,10 @@ struct DiffFileInfo {
     checksum: String,
 }
 
-impl DiffFileInfo {
-    fn new(reader: &DiffFileReader<impl Read>) -> Self {
-        let meta = reader.metadata.clone();
-        Self {
-            creation_time: meta.creation_time,
-            name: meta.name,
-            parent: meta.parent,
-            total_chunks: reader.index.len().try_into().unwrap(),
-            changed_chunks: meta.diff_count,
-            checksum: format!("{}", blake3::Hash::from_bytes(meta.checksum)),
-        }
-    }
-}
-
 fn do_diff_for_directory(
     base: PathBuf,
     new: PathBuf,
     output: PathBuf,
-    name: Option<String>,
-    parent_name: Option<String>,
 ) -> anyhow::Result<()> {
     info!("Collecting files...");
     let collected = collect_chunks(&new, None)?;
@@ -489,29 +352,13 @@ fn do_diff_for_directory(
     let temp_file = NamedTempFile::new_in(output_dir)?;
     debug!("temp_file: {}", temp_file.as_ref().display());
     let output_file = File::create_buffered(temp_file.as_ref())?;
-    let mut diff_file = DiffFileWriter::new(
-        output_file,
-        Metadata {
-            diff_count: 0,                /* placeholder */
-            checksum: Default::default(), /* placeholder */
-            name: name
-                .unwrap_or_else(|| unwrap_os_str!(new.file_name().expect("No filename")).into()),
-            parent: parent_name
-                .unwrap_or_else(|| unwrap_os_str!(base.file_name().expect("No filename")).into()),
-            creation_time: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
-        },
-        collected.clone(),
-    )?;
+    let mut diff_file = diff2::DiffFileWriter::create(output_file, Metadata::default())?;
 
     let (tx, rx) = sync_channel(1024);
     info!("Processing {} files...", collected.len());
 
     let progress = stylized_progress_bar(collected.len() as u64);
-    let handle = spawn(move || {
-        let checksum = Arc::new(Mutex::new(Checksum::new()));
+    spawn(move || {
         collected.into_par_iter().for_each_with(tx, |tx, (x, y)| {
             let base_file = base.join(format!("{x}/{y}.png"));
             let new_file = new.join(format!("{x}/{y}.png"));
@@ -524,32 +371,26 @@ fn do_diff_for_directory(
             }
             read_png(&new_file, &mut new_buf).unwrap();
 
-            checksum.lock().unwrap().add_chunk((x, y), &new_buf);
+            let checksum = chunk_checksum(&new_buf);
 
             // It's expecting that a large percent of the chunks are not mutated.
             // Thus in this case, only computing diff for changed chunks can reduce the process time.
-            if !base_file.exists() || base_buf != new_buf {
-                let compressed_diff = diff_png(&mut base_buf, &new_buf).unwrap();
-                if let Some(b) = compressed_diff {
-                    tx.send((x, y, b)).unwrap();
-                }
-            }
+            let compressed_diff = if !base_file.exists() || base_buf != new_buf {
+                let compressed_diff = diff_png_compressed(&mut base_buf, &new_buf).unwrap();
+                Some(compressed_diff)
+            } else {
+                None
+            };
+            tx.send((x, y, compressed_diff, checksum)).unwrap();
             progress.inc(1);
         });
         progress.finish();
-        Arc::try_unwrap(checksum)
-            .unwrap_or_else(|_| unreachable!())
-            .into_inner()
-            .unwrap()
-            .compute()
     });
 
-    let mut diff_counter = 0_u32;
-    for (x, y, diff) in rx {
-        diff_file.add_chunk_diff((x, y), &diff)?;
-        diff_counter += 1;
+    for (x, y, diff, checksum) in rx {
+        diff_file.add_entry((x, y), diff.as_ref().map(|x| x.as_slice()), checksum)?;
     }
-    diff_file.finish(diff_counter, handle.join().unwrap().into())?;
+    diff_file.finalize()?;
     temp_file.persist(output)?;
     Ok(())
 }
@@ -558,8 +399,6 @@ fn do_diff_for_tar(
     base: PathBuf,
     new: PathBuf,
     output: PathBuf,
-    name: Option<String>,
-    parent_name: Option<String>,
 ) -> anyhow::Result<()> {
     info!("Indexing 'base' tarball...");
     let base_tar = ChunksTarReader::open_with_index(&base)?;
@@ -576,27 +415,13 @@ fn do_diff_for_tar(
     let temp_file = NamedTempFile::new_in(output_dir)?;
     debug!("temp_file: {}", temp_file.as_ref().display());
     let output_file = File::create_buffered(temp_file.as_ref())?;
-    let mut diff_file = DiffFileWriter::new(
-        output_file,
-        Metadata {
-            diff_count: 0,                /* placeholder */
-            checksum: Default::default(), /* placeholder */
-            name: name.unwrap_or_else(|| new_tar.root_name.clone()),
-            parent: parent_name.unwrap_or_else(|| base_tar.root_name.clone()),
-            creation_time: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
-        },
-        new_tar.map.keys().map(|x| *x).collect::<Vec<_>>(),
-    )?;
+    let mut diff_file = diff2::DiffFileWriter::create(output_file, Metadata::default())?;
 
     let (tx, rx) = sync_channel(1024);
     info!("Processing {} files...", new_tar.map.len());
 
     let progress = stylized_progress_bar(new_tar.map.len() as u64);
-    let handle = spawn(move || {
-        let checksum = Arc::new(Mutex::new(Checksum::new()));
+    spawn(move || {
         new_tar
             .map
             .keys()
@@ -607,37 +432,38 @@ fn do_diff_for_tar(
                 let mut new_buf = vec![0_u8; CHUNK_LENGTH];
 
                 let base_chunk_reader = base_tar.open_chunk((x, y));
-                let base_chunk_present = base_chunk_reader.is_some();
+                let base_chunk_present;
                 if let Some(r) = base_chunk_reader {
                     read_png_reader(r.unwrap(), &mut base_buf).unwrap();
+                    base_chunk_present = true;
+                } else {
+                    base_chunk_present = false;
                 }
                 let new_chunk_reader = new_tar.open_chunk((x, y)).unwrap().unwrap();
                 read_png_reader(new_chunk_reader, &mut new_buf).unwrap();
 
-                checksum.lock().unwrap().add_chunk((x, y), &new_buf);
+                let checksum = chunk_checksum(&new_buf);
 
-                if !base_chunk_present || base_buf != new_buf {
-                    let compressed_diff = diff_png(&mut base_buf, &new_buf).unwrap();
-                    if let Some(b) = compressed_diff {
-                        tx.send((x, y, b)).unwrap();
-                    }
-                }
+                let compressed_diff = if !base_chunk_present || base_buf != new_buf {
+                    let compressed_diff = diff_png_compressed(&mut base_buf, &new_buf).unwrap();
+                    Some(compressed_diff)
+                } else {
+                    None
+                };
+                tx.send((x, y, compressed_diff, checksum)).unwrap();
                 progress.inc(1);
             });
         progress.finish();
-        Arc::try_unwrap(checksum)
-            .unwrap_or_else(|_| unreachable!())
-            .into_inner()
-            .unwrap()
-            .compute()
     });
 
-    let mut diff_counter = 0_u32;
-    for (x, y, diff) in rx {
-        diff_file.add_chunk_diff((x, y), &diff)?;
-        diff_counter += 1;
+    for (x, y, diff_data, checksum) in rx {
+        diff_file.add_entry((x, y), diff_data.as_ref().map(|x| x.as_slice()), checksum)?;
     }
-    diff_file.finish(diff_counter, handle.join().unwrap().into())?;
+    diff_file.finalize()?;
     temp_file.persist(output)?;
     Ok(())
+}
+
+#[test]
+fn test() {
 }

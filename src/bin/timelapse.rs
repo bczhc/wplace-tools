@@ -8,7 +8,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::process::abort;
 use std::time::Instant;
-use wplace_tools::checksum::CHUNK_CRC32;
+use wplace_tools::checksum::{chunk_checksum};
 use wplace_tools::diff2::DiffDataRange;
 use wplace_tools::indexed_png::{read_png, write_chunk_png};
 use wplace_tools::{apply_chunk, diff2, extract_datetime, ChunkNumber, CHUNK_LENGTH};
@@ -78,7 +78,7 @@ fn main() -> anyhow::Result<()> {
                 fs::create_dir_all(dir)?;
 
                 // checksum validation
-                if CHUNK_CRC32.checksum(&chunk) != entry.checksum {
+                if chunk_checksum(&chunk) != entry.checksum {
                     eprintln!("Checksum not matched!");
                     abort();
                 }

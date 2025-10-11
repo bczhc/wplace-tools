@@ -1,4 +1,4 @@
-use crate::ChunkNumber;
+use crate::{open_file_range, ChunkNumber};
 use lazy_regex::regex;
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -76,11 +76,7 @@ impl ChunksTarReader {
         match self.map.get(&chunk_number) {
             None => None,
             Some(range) => {
-                let reader = File::open_buffered(&self.path).and_then(|mut x| {
-                    x.seek(SeekFrom::Start(range.start))?;
-                    Ok(x.take(range.size))
-                });
-                Some(reader)
+                Some(open_file_range(&self.path, range.start, range.size))
             }
         }
     }

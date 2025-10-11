@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::stdout;
 use std::path::{Path, PathBuf};
-use wplace_tools::checksum::CHUNK_CRC32;
+use wplace_tools::checksum::{chunk_checksum};
 use wplace_tools::indexed_png::read_png;
 use wplace_tools::{
     collect_chunks, set_up_logger, stylized_progress_bar, ChunkNumber, CHUNK_LENGTH,
@@ -39,7 +39,7 @@ fn main() -> anyhow::Result<()> {
             let file = path.join(format!("{}/{}.png", x.0, x.1));
             read_png(file, &mut buf).unwrap();
             pb.inc(1);
-            (x, CHUNK_CRC32.checksum(&buf))
+            (x, chunk_checksum(&buf))
         })
         .collect::<HashMap<_, _>>();
 

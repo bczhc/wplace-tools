@@ -5,7 +5,6 @@
 #![feature(likely_unlikely)]
 
 pub mod checksum;
-pub mod diff_file;
 pub mod indexed_png;
 pub mod zip;
 pub mod tar;
@@ -15,9 +14,13 @@ use indicatif::{ProgressBar, ProgressStyle};
 use pathdiff::diff_paths;
 use std::env::set_var;
 use std::path::{Path, PathBuf};
-use std::{env, fs, hint};
+use std::{env, fs, hint, io};
+use std::fs::File;
+use std::io::{BufReader, Read, Seek, SeekFrom, Take};
 use lazy_regex::regex;
 use walkdir::WalkDir;
+use yeet_ops::yeet;
+use crate::checksum::chunk_checksum;
 use crate::indexed_png::{read_png, write_chunk_png};
 
 pub const CHUNK_LENGTH: usize = 1_000_000;
@@ -211,6 +214,7 @@ pub fn apply_png(
     base: impl AsRef<Path>,
     output: impl AsRef<Path>,
     diff_data: &[u8; CHUNK_LENGTH],
+    checksum: u32,
 ) -> anyhow::Result<()> {
     let mut base_buf = vec![0_u8; CHUNK_LENGTH];
 
@@ -219,6 +223,10 @@ pub fn apply_png(
     }
 
     apply_chunk(&mut base_buf, diff_data);
+
+    if chunk_checksum(&base_buf) != checksum {
+        yeet!(anyhow::anyhow!("Checksum not matched!"));
+    }
 
     write_chunk_png(output, &base_buf)?;
 
@@ -236,4 +244,11 @@ pub fn apply_chunk(
             *base_pix = diff_pix & PALETTE_INDEX_MASK;
         }
     }
+}
+
+#[inline(always)]
+pub fn open_file_range(path: impl AsRef<Path>, pos: u64, len: u64) -> io::Result<Take<BufReader<File>>> {
+    let mut file = File::open_buffered(path)?;
+    file.seek(SeekFrom::Start(pos))?;
+    Ok(file.take(len))
 }

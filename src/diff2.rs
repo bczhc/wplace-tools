@@ -7,8 +7,6 @@
 //!
 //! Magic (\[u8; 11\]) | IndexPos (u64) | EntryCount (u32) | [`Metadata`] | diff data... (\[u8\]) | [`IndexEntry`]...
 
-use crate::checksum::CHUNK_CRC32;
-use crate::diff_file::{ReadFrom, WriteTo};
 use crate::ChunkNumber;
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 use num_enum::{FromPrimitive, TryFromPrimitive};
@@ -18,7 +16,18 @@ use std::io;
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use yeet_ops::yeet;
 
-pub const MAGIC: [u8; 11] = crate::diff_file::MAGIC;
+pub const MAGIC: [u8; 11] = *b"wplace-diff";
+
+trait WriteTo {
+    fn write_to(&self, w: impl Write) -> io::Result<()>;
+}
+
+trait ReadFrom
+where
+    Self: Sized,
+{
+    fn read_from(r: impl Read) -> io::Result<Self>;
+}
 
 /// ## Format
 ///
@@ -58,6 +67,12 @@ pub enum DiffDataRange {
 }
 
 impl DiffDataRange {
+    pub fn is_changed(&self) -> bool {
+        matches!(self, Self::Changed {..})
+    }
+}
+
+impl DiffDataRange {
     fn to_flag(&self) -> ChunkFlag {
         match self {
             DiffDataRange::Unchanged => ChunkFlag::Unchanged,
@@ -77,6 +92,7 @@ pub struct DiffFile<R: Read + Seek> {
     reader: R,
     pub index_pos: u64,
     pub entry_count: u32,
+    pub metadata: Metadata,
 }
 
 impl<R: Read + Seek> DiffFile<R> {
@@ -89,10 +105,12 @@ impl<R: Read + Seek> DiffFile<R> {
 
         let index_pos = reader.read_u64::<LE>()?;
         let entry_count = reader.read_u32::<LE>()?;
+        let metadata = Metadata::read_from(&mut reader)?;
         Ok(Self {
             reader,
             index_pos,
             entry_count,
+            metadata,
         })
     }
 
