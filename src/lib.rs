@@ -5,23 +5,23 @@
 #![feature(likely_unlikely)]
 
 pub mod checksum;
-pub mod indexed_png;
-pub mod zip;
-pub mod tar;
 pub mod diff2;
+pub mod indexed_png;
+pub mod tar;
+pub mod zip;
 
-use indicatif::{ProgressBar, ProgressStyle};
-use pathdiff::diff_paths;
-use std::env::set_var;
-use std::path::{Path, PathBuf};
-use std::{env, fs, hint, io};
-use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom, Take};
-use lazy_regex::regex;
-use walkdir::WalkDir;
-use yeet_ops::yeet;
 use crate::checksum::chunk_checksum;
 use crate::indexed_png::{read_png, write_chunk_png};
+use indicatif::{ProgressBar, ProgressStyle};
+use lazy_regex::regex;
+use pathdiff::diff_paths;
+use std::env::set_var;
+use std::fs::File;
+use std::io::{BufReader, Read, Seek, SeekFrom, Take};
+use std::path::{Path, PathBuf};
+use std::{env, fs, hint, io};
+use walkdir::WalkDir;
+use yeet_ops::yeet;
 
 pub const CHUNK_LENGTH: usize = 1_000_000;
 pub const MUTATION_MASK: u8 = 0b0100_0000;
@@ -194,19 +194,14 @@ pub macro unwrap_os_str($x:expr) {
     $x.to_str().expect("Invalid UTF-8")
 }
 
-pub fn extract_datetime(s: &str) -> String {
-    let extract = |name: &str| {
-        let regex = regex!(r"(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z)");
-        regex
-            .captures_iter(name)
-            .next()
-            .unwrap()
-            .get(1)
-            .unwrap()
-            .as_str()
-            .to_string()
-    };
-    extract(s)
+pub fn extract_datetime(s: &str) -> Option<String> {
+    let regex = regex!(r"(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z)");
+    Some(regex
+        .captures_iter(s)
+        .next()?
+        .get(1)?
+        .as_str()
+        .to_string())
 }
 
 #[inline(always)]
@@ -234,10 +229,7 @@ pub fn apply_png(
 }
 
 #[inline(always)]
-pub fn apply_chunk(
-    base: &mut [u8],
-    diff_data: &[u8; CHUNK_LENGTH]
-) {
+pub fn apply_chunk(base: &mut [u8], diff_data: &[u8; CHUNK_LENGTH]) {
     for (base_pix, diff_pix) in base.iter_mut().zip(diff_data) {
         if hint::unlikely(diff_pix & MUTATION_MASK == MUTATION_MASK) {
             // has mutation flag - apply the pixel
@@ -247,8 +239,26 @@ pub fn apply_chunk(
 }
 
 #[inline(always)]
-pub fn open_file_range(path: impl AsRef<Path>, pos: u64, len: u64) -> io::Result<Take<BufReader<File>>> {
+pub fn open_file_range(
+    path: impl AsRef<Path>,
+    pos: u64,
+    len: u64,
+) -> io::Result<Take<BufReader<File>>> {
     let mut file = File::open_buffered(path)?;
     file.seek(SeekFrom::Start(pos))?;
     Ok(file.take(len))
+}
+
+#[inline(always)]
+pub fn flate2_decompress(reader: impl Read, buf: &mut [u8]) -> io::Result<()> {
+    let mut read = flate2::read::DeflateDecoder::new(reader);
+    read.read_exact(buf)
+}
+
+#[inline(always)]
+pub fn validate_chunk_checksum(chunk: &[u8], checksum: u32) -> anyhow::Result<()> {
+    if chunk_checksum(chunk) != checksum {
+        yeet!(anyhow::anyhow!("Checksum not matched!"));
+    }
+    Ok(())
 }
