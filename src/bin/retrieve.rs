@@ -24,7 +24,7 @@ use yeet_ops::yeet;
 
 #[derive(clap::Parser)]
 struct Args {
-    /// Chunks to retrieve. Format: x-y[,x-y]..
+    /// Chunk(s) to retrieve. Format: x-y[,x-y]..
     #[arg(short, long)]
     chunk: String,
 
@@ -32,7 +32,7 @@ struct Args {
     #[arg(short, long)]
     diff_dir: PathBuf,
 
-    /// Initial snapshot.
+    /// Path of the initial snapshot.
     #[arg(short, long)]
     base_snapshot: PathBuf,
 
@@ -40,11 +40,11 @@ struct Args {
     #[arg(short, long)]
     out: PathBuf,
 
-    /// Destination snapshot name
+    /// Name of the goal snapshot.
     #[arg(short = 't', long)]
     at: String,
 
-    /// If enabled, instead of only one, also retrieve all chunks prior to the destination snapshot.
+    /// If enabled, instead of retrieving only the goal one, also retrieve all chunks prior to it.
     #[arg(short, long)]
     all: bool,
 }
