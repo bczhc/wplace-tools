@@ -13,7 +13,7 @@ use std::fs;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::{abort, exit};
-use wplace_tools::diff2::DiffDataRange;
+use wplace_tools::diff2::{DiffDataRange, IndexEntry};
 use wplace_tools::indexed_png::{read_png, read_png_reader, write_chunk_png};
 use wplace_tools::tar::ChunksTarReader;
 use wplace_tools::{
@@ -121,13 +121,22 @@ fn main() -> anyhow::Result<()> {
             let mut diff_data = vec![0_u8; CHUNK_LENGTH];
 
             info!("{:?}: Retrieving initial chunk...", n);
-            let mut base = retrieve_chunk(&args.base_snapshot, n)?;
+            let mut base = retrieve_chunk(&args.base_snapshot, n, true)?;
             for (idx, name) in apply_list.iter().enumerate() {
+                let entry = map[name].get(&n);
+                let entry = match entry {
+                    None => {
+                        // chunk had not been created in this snapshot
+                        info!("Chunk not present in this snapshot '{}', skipping...", name);
+                        continue
+                    }
+                    Some(e) => {e}
+                };
+
                 info!("{:?}: Applying {name}...", n);
-                let entry = &map[name][&n];
                 match entry.diff_data_range {
                     DiffDataRange::Unchanged => {
-                        // just past
+                        // just pass
                     }
                     DiffDataRange::Changed { pos, len } => {
                         let reader =
@@ -151,7 +160,7 @@ fn main() -> anyhow::Result<()> {
             }
         };
         if let Err(e) = result {
-            error!("Error occurred: {e}. Aborting...");
+            error!("Error occurred: {e}");
             exit(1);
         }
     });
@@ -172,11 +181,14 @@ fn parse_chunk_string(s: &str) -> anyhow::Result<Vec<ChunkNumber>> {
     Ok(chunks)
 }
 
-fn retrieve_chunk(snapshot: impl AsRef<Path>, n: ChunkNumber) -> anyhow::Result<Vec<u8>> {
+fn retrieve_chunk(snapshot: impl AsRef<Path>, n: ChunkNumber, allow_non_exist: bool) -> anyhow::Result<Vec<u8>> {
     let mut buf = vec![0_u8; CHUNK_LENGTH];
     let path = snapshot.as_ref();
     if path.is_dir() {
-        read_png(path.join(format!("{}/{}.png", n.0, n.1)), &mut buf)?;
+        let png_file = path.join(format!("{}/{}.png", n.0, n.1));
+        if png_file.exists() || !allow_non_exist {
+            read_png(png_file, &mut buf)?;
+        }
     } else if path
         .extension()
         .map(|x| x.eq_ignore_ascii_case(OsStr::new("tar")))
