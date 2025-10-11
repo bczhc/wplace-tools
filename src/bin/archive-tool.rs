@@ -7,7 +7,7 @@
 
 use crate::cli::Commands;
 use clap::Parser;
-use flate2::{Compression, write};
+use flate2::{write, Compression};
 use log::{debug, error, info};
 use rayon::prelude::*;
 use std::cell::RefCell;
@@ -15,7 +15,7 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::abort;
+use std::process::{abort, exit};
 use std::sync::mpsc::sync_channel;
 use std::thread::spawn;
 use std::{fs, hint};
@@ -25,8 +25,8 @@ use wplace_tools::diff2::{DiffDataRange, Metadata};
 use wplace_tools::indexed_png::{read_png, read_png_reader};
 use wplace_tools::tar::ChunksTarReader;
 use wplace_tools::{
-    CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK, apply_png, collect_chunks, diff2,
-    new_chunk_file, open_file_range, set_up_logger, stylized_progress_bar,
+    apply_png, collect_chunks, diff2, new_chunk_file, open_file_range, set_up_logger,
+    stylized_progress_bar, CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK,
 };
 
 mod cli {
@@ -206,7 +206,7 @@ fn main() -> anyhow::Result<()> {
                 };
                 if let Err(e) = result {
                     error!("Fatal error on applying diff: {e}");
-                    abort();
+                    exit(1);
                 }
             });
             progress.finish();
@@ -226,7 +226,7 @@ fn main() -> anyhow::Result<()> {
                             new_chunk_file(&output, (chunk_x, chunk_y), "png"),
                         ) {
                             error!("Failed to copy: {}; abort", e);
-                            abort();
+                            exit(1);
                         };
                         progress.inc(1);
                     }

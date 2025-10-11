@@ -12,7 +12,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::process::abort;
+use std::process::{abort, exit};
 use wplace_tools::diff2::DiffDataRange;
 use wplace_tools::indexed_png::{read_png, read_png_reader, write_chunk_png};
 use wplace_tools::tar::ChunksTarReader;
@@ -152,7 +152,7 @@ fn main() -> anyhow::Result<()> {
         };
         if let Err(e) = result {
             error!("Error occurred: {e}. Aborting...");
-            abort();
+            exit(1);
         }
     });
 
