@@ -183,11 +183,11 @@ where
     }
 }
 
-trait WriteTo {
+pub trait WriteTo {
     fn write_to(&self, w: impl Write) -> io::Result<()>;
 }
 
-trait ReadFrom
+pub trait ReadFrom
 where
     Self: Sized,
 {

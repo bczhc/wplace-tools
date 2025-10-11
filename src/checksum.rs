@@ -39,4 +39,4 @@ impl Checksum {
     }
 }
 
-pub static CRC32: Crc<u32> = Crc::<u32>::new(&crc::CRC_32_CKSUM);
+pub static CHUNK_CRC32: Crc<u32> = Crc::<u32>::new(&crc::CRC_32_CKSUM);

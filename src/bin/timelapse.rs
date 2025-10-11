@@ -6,18 +6,18 @@ use std::fs;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::process::abort;
 use std::time::Instant;
+use wplace_tools::checksum::CHUNK_CRC32;
 use wplace_tools::diff2::DiffDataRange;
-use wplace_tools::diff_file::DiffFileReader;
 use wplace_tools::indexed_png::{read_png, write_chunk_png};
 use wplace_tools::{apply_chunk, diff2, extract_datetime, ChunkNumber, CHUNK_LENGTH};
 
 fn main() -> anyhow::Result<()> {
     let new_diff_path = Path::new("/mnt/nvme/wplace-archives/mine/new-diff");
-    let diff_path = Path::new("/mnt/nvme/wplace-archives/mine/diffs");
 
     let mut filenames = Vec::new();
-    for x in walkdir::WalkDir::new(diff_path) {
+    for x in walkdir::WalkDir::new(new_diff_path) {
         let x = x?;
         if x.path().is_file() {
             filenames.push(x.file_name().to_os_string());
@@ -38,26 +38,31 @@ fn main() -> anyhow::Result<()> {
         .collect::<HashMap<_, _>>();
 
     let chunk_number: ChunkNumber = (1717, 837);
-    println!("Applying...");
     let initial = "2025-08-09T20-01-14.231Z";
     let names = filenames
         .iter()
         .map(|x| extract_datetime(x.to_str().unwrap()))
         .collect::<Vec<_>>();
-    let apply_list = &names[1..];
+    let apply_list = &names[0..];
 
     let mut chunk = [0_u8; CHUNK_LENGTH];
     let mut diff_data = [0_u8; CHUNK_LENGTH];
     read_png(
-        format!("/mnt/nvme/wplace-archives/mine/full/{initial}/{}/{}.png", chunk_number.0, chunk_number.1),
+        format!(
+            "/mnt/nvme/wplace-archives/mine/full/{initial}/{}/{}.png",
+            chunk_number.0, chunk_number.1
+        ),
         &mut chunk,
     )?;
 
     let start = Instant::now();
     for x in apply_list {
-        println!("Applying {x}...");
-        let range = &collected[x][&chunk_number];
-        match range {
+        let entry = &collected[x][&chunk_number];
+        println!(
+            "Applying {x} changed: {}...",
+            matches!(entry.diff_data_range,DiffDataRange::Changed {..})
+        );
+        match &entry.diff_data_range {
             DiffDataRange::Unchanged => {
                 // just pass
             }
@@ -71,6 +76,13 @@ fn main() -> anyhow::Result<()> {
                 let string = format!("/home/bczhc/{}-{}", chunk_number.0, chunk_number.1);
                 let dir = Path::new(string.as_str());
                 fs::create_dir_all(dir)?;
+
+                // checksum validation
+                if CHUNK_CRC32.checksum(&chunk) != entry.checksum {
+                    eprintln!("Checksum not matched!");
+                    abort();
+                }
+
                 write_chunk_png(dir.join(format!("{x}.png")), &chunk)?;
             }
         }
