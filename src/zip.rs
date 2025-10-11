@@ -1,13 +1,12 @@
+use crate::indexed_png::read_png_reader;
+use crate::{CHUNK_LENGTH, ChunkNumber};
+use rawzip::RECOMMENDED_BUFFER_SIZE;
+use rawzip::path::{RawPath, ZipFilePath};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
-use lazy_regex::regex;
-use rawzip::path::{RawPath, ZipFilePath};
-use rawzip::RECOMMENDED_BUFFER_SIZE;
-use crate::{ChunkNumber, CHUNK_LENGTH};
-use crate::indexed_png::read_png_reader;
 
 type ChunkIndexMap = HashMap<ChunkNumber, (u64, u64)>;
 
@@ -49,7 +48,7 @@ fn collect_zip_entries(path: impl AsRef<Path>) -> anyhow::Result<ChunkIndexMap> 
     assert!(file_path.ends_with('/'));
     let root_path = String::from(file_path);
 
-    let mut map = HashMap::new();
+    let map = HashMap::new();
     loop {
         let Some(e) = entries.next_entry()? else {
             break;
@@ -78,7 +77,7 @@ fn collect_zip_entries(path: impl AsRef<Path>) -> anyhow::Result<ChunkIndexMap> 
         //     .as_str()
         //     .parse::<u16>()
         //     .expect("Not an integer");
-        // 
+        //
         // let data_range = zip.get_entry(e.wayfinder())?.compressed_data_range();
         // map.insert((chunk_x, chunk_y), data_range);
     }
@@ -87,6 +86,6 @@ fn collect_zip_entries(path: impl AsRef<Path>) -> anyhow::Result<ChunkIndexMap> 
 }
 
 #[inline(always)]
-fn unwrap_file_path<'a>(path: ZipFilePath<RawPath>) -> &str {
+fn unwrap_file_path(path: ZipFilePath<RawPath<'_>>) -> &str {
     std::str::from_utf8(path.as_bytes()).expect("Invalid UTF-8")
 }

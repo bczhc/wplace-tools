@@ -1,6 +1,7 @@
 #![feature(file_buffered)]
 #![feature(yeet_expr)]
 #![feature(try_blocks)]
+#![warn(clippy::all, clippy::nursery)]
 
 use anyhow::anyhow;
 use clap::Parser;
@@ -12,11 +13,14 @@ use std::fs;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::abort;
+use wplace_tools::diff2::DiffDataRange;
 use wplace_tools::indexed_png::{read_png, read_png_reader, write_chunk_png};
 use wplace_tools::tar::ChunksTarReader;
-use wplace_tools::{apply_chunk, diff2, extract_datetime, flate2_decompress, open_file_range, set_up_logger, stylized_progress_bar, validate_chunk_checksum, ChunkNumber, CHUNK_LENGTH};
+use wplace_tools::{
+    CHUNK_LENGTH, ChunkNumber, apply_chunk, diff2, extract_datetime, flate2_decompress,
+    open_file_range, set_up_logger, stylized_progress_bar, validate_chunk_checksum,
+};
 use yeet_ops::yeet;
-use wplace_tools::diff2::DiffDataRange;
 
 #[derive(clap::Parser)]
 struct Args {
@@ -57,26 +61,38 @@ fn main() -> anyhow::Result<()> {
     for x in walkdir::WalkDir::new(diff_path) {
         let x = x?;
         if x.path().is_file() {
-            let filename = x.file_name().to_str().ok_or_else(|| anyhow!("Invalid filename"))?;
-            diff_list.push(extract_datetime(filename).ok_or_else(|| anyhow!("Malformed diff filename"))?);
+            let filename = x
+                .file_name()
+                .to_str()
+                .ok_or_else(|| anyhow!("Invalid filename"))?;
+            diff_list.push(
+                extract_datetime(filename).ok_or_else(|| anyhow!("Malformed diff filename"))?,
+            );
         }
     }
     diff_list.sort();
 
-    let Some(dest_snap_pos) = diff_list
-        .iter()
-        .position(|x| x == &args.at)
-    else {
+    let Some(dest_snap_pos) = diff_list.iter().position(|x| x == &args.at) else {
         yeet!(anyhow::anyhow!(
             "Cannot find the destination snapshot in the diff list"
         ));
     };
     let base_snapshot_name = extract_datetime(
-        format!("{}", args.base_snapshot.file_name().expect("No filename").display()).as_str(),
+        format!(
+            "{}",
+            args.base_snapshot
+                .file_name()
+                .expect("No filename")
+                .display()
+        )
+        .as_str(),
     )
     .ok_or_else(|| anyhow!("Malformed base snapshot name"))?;
-    let base_start = diff_list.iter().position(|x| x == &base_snapshot_name)
-        .map(|x| x + 1).unwrap_or(0);
+    let base_start = diff_list
+        .iter()
+        .position(|x| x == &base_snapshot_name)
+        .map(|x| x + 1)
+        .unwrap_or(0);
     let apply_list = &diff_list[base_start..=dest_snap_pos];
 
     info!("Collecting index...");
@@ -85,8 +101,10 @@ fn main() -> anyhow::Result<()> {
         .iter()
         .par_bridge()
         .map(|x| {
-            let mut reader =
-                diff2::DiffFile::open(File::open_buffered(diff_path.join(format!("{x}.diff"))).unwrap()).unwrap();
+            let mut reader = diff2::DiffFile::open(
+                File::open_buffered(diff_path.join(format!("{x}.diff"))).unwrap(),
+            )
+            .unwrap();
             let index = reader.read_index().unwrap();
             progress.inc(1);
             (extract_datetime(x).unwrap(), index)
@@ -111,10 +129,11 @@ fn main() -> anyhow::Result<()> {
                     DiffDataRange::Unchanged => {
                         // just past
                     }
-                    DiffDataRange::Changed { pos,len } => {
-                        let reader = open_file_range(diff_path.join(format!("{name}.diff")), pos, len)?;
+                    DiffDataRange::Changed { pos, len } => {
+                        let reader =
+                            open_file_range(diff_path.join(format!("{name}.diff")), pos, len)?;
                         flate2_decompress(reader, &mut diff_data)?;
-                        apply_chunk(&mut base, <&[u8; CHUNK_LENGTH]>::try_from(&diff_data[..]).unwrap());
+                        apply_chunk(&mut base, <&[_; _]>::try_from(&diff_data[..]).unwrap());
                         validate_chunk_checksum(&base, entry.checksum)?;
                     }
                 }

@@ -2,41 +2,32 @@
 #![feature(file_buffered)]
 #![feature(likely_unlikely)]
 #![feature(yeet_expr)]
-#![feature(generic_arg_infer)]
 #![feature(try_blocks)]
+#![warn(clippy::all, clippy::nursery)]
 
 use crate::cli::Commands;
-use chrono::{Local, TimeZone};
 use clap::Parser;
-use flate2::{write, Compression};
+use flate2::{Compression, write};
 use log::{debug, error, info};
 use rayon::prelude::*;
-use serde::Serialize;
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
+use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{abort, exit};
+use std::process::abort;
 use std::sync::mpsc::sync_channel;
-use std::sync::{Arc, Mutex};
 use std::thread::spawn;
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, hint};
-use crc_fast::CrcAlgorithm;
 use tempfile::NamedTempFile;
-use wplace_tools::checksum::{chunk_checksum};
+use wplace_tools::checksum::chunk_checksum;
 use wplace_tools::diff2::{DiffDataRange, Metadata};
-use wplace_tools::indexed_png::{read_png, read_png_reader, write_chunk_png};
+use wplace_tools::indexed_png::{read_png, read_png_reader};
 use wplace_tools::tar::ChunksTarReader;
-use wplace_tools::zip::ChunksZipReader;
 use wplace_tools::{
-    apply_png, collect_chunks, diff2, extract_datetime, new_chunk_file, open_file_range, set_up_logger,
-    stylized_progress_bar, unwrap_os_str, ChunkNumber, CHUNK_LENGTH, MUTATION_MASK,
-    PALETTE_INDEX_MASK,
+    CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK, apply_png, collect_chunks, diff2,
+    new_chunk_file, open_file_range, set_up_logger, stylized_progress_bar,
 };
-use yeet_ops::yeet;
 
 mod cli {
     use clap::{Args, Parser, Subcommand, ValueHint};
@@ -155,11 +146,7 @@ fn main() -> anyhow::Result<()> {
     set_up_logger();
     let args = cli::Cli::parse();
     match args.command {
-        Commands::Diff {
-            base,
-            new,
-            output,
-        } => {
+        Commands::Diff { base, new, output } => {
             // a special handle for directly processing tar files
             if base.extension() == Some(OsStr::new("tar"))
                 && new.extension() == Some(OsStr::new("tar"))
@@ -170,11 +157,7 @@ fn main() -> anyhow::Result<()> {
 
             do_diff_for_directory(base, new, output)?;
         }
-        Commands::Apply {
-            base,
-            diff,
-            output,
-        } => {
+        Commands::Apply { base, diff, output } => {
             info!("Opening diff file...");
             let mut diff_file = diff2::DiffFile::open(File::open_buffered(&diff)?)?;
             let index = diff_file.read_index()?;
@@ -211,7 +194,7 @@ fn main() -> anyhow::Result<()> {
                                 output_file,
                                 <&[_; _]>::try_from(&raw_diff[..])
                                     .expect("Raw diff data length is expected to be 1_000_000"),
-                                entry.checksum
+                                entry.checksum,
                             )?;
                             progress.inc(1);
                         }
@@ -222,8 +205,8 @@ fn main() -> anyhow::Result<()> {
                     }
                 };
                 if let Err(e) = result {
-                        error!("Fatal error on applying diff: {e}");
-                        abort();
+                    error!("Fatal error on applying diff: {e}");
+                    abort();
                 }
             });
             progress.finish();
@@ -323,22 +306,7 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[derive(Serialize)]
-#[serde(rename = "camelCase")]
-struct DiffFileInfo {
-    creation_time: u64,
-    name: String,
-    parent: String,
-    total_chunks: u32,
-    changed_chunks: u32,
-    checksum: String,
-}
-
-fn do_diff_for_directory(
-    base: PathBuf,
-    new: PathBuf,
-    output: PathBuf,
-) -> anyhow::Result<()> {
+fn do_diff_for_directory(base: PathBuf, new: PathBuf, output: PathBuf) -> anyhow::Result<()> {
     info!("Collecting files...");
     let collected = collect_chunks(&new, None)?;
 
@@ -388,18 +356,14 @@ fn do_diff_for_directory(
     });
 
     for (x, y, diff, checksum) in rx {
-        diff_file.add_entry((x, y), diff.as_ref().map(|x| x.as_slice()), checksum)?;
+        diff_file.add_entry((x, y), diff.as_deref(), checksum)?;
     }
     diff_file.finalize()?;
     temp_file.persist(output)?;
     Ok(())
 }
 
-fn do_diff_for_tar(
-    base: PathBuf,
-    new: PathBuf,
-    output: PathBuf,
-) -> anyhow::Result<()> {
+fn do_diff_for_tar(base: PathBuf, new: PathBuf, output: PathBuf) -> anyhow::Result<()> {
     info!("Indexing 'base' tarball...");
     let base_tar = ChunksTarReader::open_with_index(&base)?;
     info!("Indexing 'new' tarball...");
@@ -425,19 +389,15 @@ fn do_diff_for_tar(
         new_tar
             .map
             .keys()
-            .into_iter()
             .par_bridge()
             .for_each_with(tx, |tx, &(x, y)| {
                 let mut base_buf = vec![0_u8; CHUNK_LENGTH];
                 let mut new_buf = vec![0_u8; CHUNK_LENGTH];
 
                 let base_chunk_reader = base_tar.open_chunk((x, y));
-                let base_chunk_present;
+                let base_chunk_present = base_chunk_reader.is_some();
                 if let Some(r) = base_chunk_reader {
                     read_png_reader(r.unwrap(), &mut base_buf).unwrap();
-                    base_chunk_present = true;
-                } else {
-                    base_chunk_present = false;
                 }
                 let new_chunk_reader = new_tar.open_chunk((x, y)).unwrap().unwrap();
                 read_png_reader(new_chunk_reader, &mut new_buf).unwrap();
@@ -457,7 +417,7 @@ fn do_diff_for_tar(
     });
 
     for (x, y, diff_data, checksum) in rx {
-        diff_file.add_entry((x, y), diff_data.as_ref().map(|x| x.as_slice()), checksum)?;
+        diff_file.add_entry((x, y), diff_data.as_deref(), checksum)?;
     }
     diff_file.finalize()?;
     temp_file.persist(output)?;
@@ -465,5 +425,4 @@ fn do_diff_for_tar(
 }
 
 #[test]
-fn test() {
-}
+fn test() {}

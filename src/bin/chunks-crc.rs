@@ -6,13 +6,10 @@ use log::info;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::stdout;
-use std::path::{Path, PathBuf};
-use wplace_tools::checksum::{chunk_checksum};
+use std::path::PathBuf;
+use wplace_tools::checksum::chunk_checksum;
 use wplace_tools::indexed_png::read_png;
-use wplace_tools::{
-    collect_chunks, set_up_logger, stylized_progress_bar, ChunkNumber, CHUNK_LENGTH,
-};
+use wplace_tools::{CHUNK_LENGTH, collect_chunks, set_up_logger, stylized_progress_bar};
 
 #[derive(clap::Parser)]
 struct Args {
@@ -45,10 +42,6 @@ fn main() -> anyhow::Result<()> {
 
     pb.finish();
 
-    bincode::encode_into_std_write(
-        computed,
-        &mut File::create_buffered(out_path)?,
-        standard(),
-    )?;
+    bincode::encode_into_std_write(computed, &mut File::create_buffered(out_path)?, standard())?;
     Ok(())
 }

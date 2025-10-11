@@ -1,15 +1,15 @@
 #![feature(file_buffered)]
 
 use lazy_regex::regex;
-use rawzip::path::{RawPath, ZipFilePath};
 use rawzip::RECOMMENDED_BUFFER_SIZE;
+use rawzip::path::{RawPath, ZipFilePath};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
-use wplace_tools::{ChunkNumber, CHUNK_LENGTH};
 use wplace_tools::indexed_png::{read_png_reader, write_chunk_png};
+use wplace_tools::{CHUNK_LENGTH, ChunkNumber};
 
 fn main() -> anyhow::Result<()> {
     let path = "/mnt/nvme/wplace-archives/1/snap.zip";
@@ -100,6 +100,6 @@ fn collect_zip_entries(path: impl AsRef<Path>) -> anyhow::Result<ChunkIndexMap> 
 }
 
 #[inline(always)]
-fn unwrap_file_path<'a>(path: ZipFilePath<RawPath>) -> &str {
+fn unwrap_file_path(path: ZipFilePath<RawPath<'_>>) -> &str {
     std::str::from_utf8(path.as_bytes()).expect("Invalid UTF-8")
 }

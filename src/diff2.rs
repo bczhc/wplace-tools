@@ -8,12 +8,12 @@
 //! Magic (\[u8; 11\]) | IndexPos (u64) | EntryCount (u32) | [`Metadata`] | diff data... (\[u8\]) | [`IndexEntry`]...
 
 use crate::ChunkNumber;
-use byteorder::{ReadBytesExt, WriteBytesExt, LE};
-use num_enum::{FromPrimitive, TryFromPrimitive};
+use byteorder::{LE, ReadBytesExt, WriteBytesExt};
+use num_enum::TryFromPrimitive;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io;
-use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use yeet_ops::yeet;
 
 pub const MAGIC: [u8; 11] = *b"wplace-diff";
@@ -52,10 +52,6 @@ pub struct IndexEntry {
     pub checksum: u32,
 }
 
-macro placeholder() {
-    Default::default()
-}
-
 #[derive(Debug, Default)]
 pub enum DiffDataRange {
     #[default]
@@ -67,16 +63,16 @@ pub enum DiffDataRange {
 }
 
 impl DiffDataRange {
-    pub fn is_changed(&self) -> bool {
-        matches!(self, Self::Changed {..})
+    pub const fn is_changed(&self) -> bool {
+        matches!(self, Self::Changed { .. })
     }
 }
 
 impl DiffDataRange {
-    fn to_flag(&self) -> ChunkFlag {
+    const fn to_flag(&self) -> ChunkFlag {
         match self {
-            DiffDataRange::Unchanged => ChunkFlag::Unchanged,
-            DiffDataRange::Changed { .. } => ChunkFlag::Changed,
+            Self::Unchanged => ChunkFlag::Unchanged,
+            Self::Changed { .. } => ChunkFlag::Changed,
         }
     }
 }
@@ -141,7 +137,7 @@ impl<W: Write + Seek> DiffFileWriter<W> {
         metadata.write_to(&mut writer)?;
         let diff_data_pos = writer.stream_position()?;
 
-        let mut index_entries = HashMap::new();
+        let index_entries = HashMap::new();
         Ok(Self {
             writer,
             current_diff_data_pos: diff_data_pos,
@@ -220,10 +216,8 @@ impl ReadFrom for Metadata {
         let json_len = r.read_u32::<LE>()? as usize;
         let mut buf = vec![0_u8; json_len];
         r.read_exact(&mut buf)?;
-        serde_json::from_str(
-            std::str::from_utf8(&buf).map_err(|e| io::Error::new(ErrorKind::Other, e))?,
-        )
-        .map_err(io::Error::from)
+        serde_json::from_str(std::str::from_utf8(&buf).map_err(io::Error::other)?)
+            .map_err(io::Error::from)
     }
 }
 
@@ -246,7 +240,7 @@ impl ReadFrom for IndexEntry {
     #[inline(always)]
     fn read_from(mut r: impl Read) -> io::Result<Self> {
         let flag = r.read_u8()?;
-        let flag = ChunkFlag::try_from(flag).map_err(|e| io::Error::new(ErrorKind::Other, e))?;
+        let flag = ChunkFlag::try_from(flag).map_err(io::Error::other)?;
         let cx = r.read_u16::<LE>()?;
         let cy = r.read_u16::<LE>()?;
         let checksum = r.read_u32::<LE>()?;

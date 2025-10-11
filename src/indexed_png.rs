@@ -4,7 +4,7 @@ use once_cell::sync::Lazy;
 use png::{BitDepth, ColorType, Info};
 use std::borrow::Cow;
 use std::fs::File;
-use std::io::{BufRead, BufReader, BufWriter, Cursor, Read, Seek, Write};
+use std::io::{BufRead, BufWriter, Cursor, Seek, Write};
 use std::path::Path;
 
 static PALETTE_DATA_IN_PNG: Lazy<[u8; 64 * 3]> = Lazy::new(|| {
@@ -49,21 +49,10 @@ pub struct PixelMapper<
 }
 
 impl PixelMapper {
-    fn new(png_info: &Info) -> PixelMapper {
+    fn new(png_info: &Info) -> Self {
         let raw_palette = png_info.palette.as_ref().expect("No palette");
         assert_eq!(raw_palette.len() % 3, 0);
         let color_count = raw_palette.len() / 3;
-        // group by three
-        let png_palette = raw_palette
-            .chunks(3)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .map(|x| {
-                assert_eq!(x.len(), 3);
-                <[u8; 3]>::try_from(x).unwrap()
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(png_palette.len(), color_count);
 
         let mut png_palette = [Default::default(); 64];
         let mut groups = raw_palette.chunks(3);
@@ -122,7 +111,7 @@ pub fn read_png_reader(reader: impl BufRead + Seek, index_buf: &mut [u8]) -> any
     let mut reader = png.read_info()?;
     let png_buf_size = reader
         .output_buffer_size()
-        .ok_or(anyhow!("Cannot read output buffer size"))?;
+        .ok_or_else(|| anyhow!("Cannot read output buffer size"))?;
     reader.next_frame(index_buf)?;
 
     let info = reader.info();

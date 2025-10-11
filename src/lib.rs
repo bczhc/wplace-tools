@@ -3,6 +3,7 @@
 #![feature(decl_macro)]
 #![feature(try_blocks)]
 #![feature(likely_unlikely)]
+#![warn(clippy::all, clippy::nursery)]
 
 pub mod checksum;
 pub mod diff2;
@@ -142,6 +143,7 @@ pub fn collect_chunks(
 pub fn stylized_progress_bar(len: u64) -> ProgressBar {
     let pb = ProgressBar::new(len);
     pb.set_style(
+        #[allow(clippy::literal_string_with_formatting_args)]
         ProgressStyle::with_template("[{elapsed_precise}] {wide_bar} {pos:>}/{len:7} {eta}")
             .unwrap()
             .progress_chars(">>-"),
@@ -196,12 +198,7 @@ pub macro unwrap_os_str($x:expr) {
 
 pub fn extract_datetime(s: &str) -> Option<String> {
     let regex = regex!(r"(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z)");
-    Some(regex
-        .captures_iter(s)
-        .next()?
-        .get(1)?
-        .as_str()
-        .to_string())
+    Some(regex.captures_iter(s).next()?.get(1)?.as_str().to_string())
 }
 
 #[inline(always)]

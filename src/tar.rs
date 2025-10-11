@@ -1,9 +1,9 @@
-use crate::{open_file_range, ChunkNumber};
+use crate::{ChunkNumber, open_file_range};
 use lazy_regex::regex;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io;
-use std::io::{BufReader, Read, Seek, SeekFrom, Take};
+use std::io::{BufReader, Take};
 use std::path::{Path, PathBuf};
 use tar::EntryType;
 
@@ -54,8 +54,8 @@ impl ChunksTarReader {
             let regex = regex!(r".*/(\d+)/(\d+)\.png$");
             let cow = x.path()?;
             let path_str = cow.to_str().expect("Invalid UTF-8");
-            assert!(regex.is_match(&path_str));
-            let group = regex.captures(&path_str).unwrap();
+            assert!(regex.is_match(path_str));
+            let group = regex.captures(path_str).unwrap();
             let chunk_number: ChunkNumber = (
                 group.get(1).unwrap().as_str().parse()?,
                 group.get(2).unwrap().as_str().parse()?,
@@ -73,11 +73,8 @@ impl ChunksTarReader {
         &self,
         chunk_number: ChunkNumber,
     ) -> Option<io::Result<Take<BufReader<File>>>> {
-        match self.map.get(&chunk_number) {
-            None => None,
-            Some(range) => {
-                Some(open_file_range(&self.path, range.start, range.size))
-            }
-        }
+        self.map
+            .get(&chunk_number)
+            .map(|range| open_file_range(&self.path, range.start, range.size))
     }
 }
