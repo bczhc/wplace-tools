@@ -22,7 +22,6 @@ use std::env::set_var;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom, Take};
-use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::{env, fs, hint, io};
@@ -273,8 +272,7 @@ pub fn quick_capture<'a>(haystack: &'a str, pattern: &Regex) -> Option<Vec<&'a s
         capture
             .iter()
             .skip(1)
-            .map(|x| x.map(|x| x.as_str()))
-            .flatten()
+            .flat_map(|x| x.map(|x| x.as_str()))
             .collect(),
     )
 }

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use wplace_tools::checksum::chunk_checksum;
 use wplace_tools::indexed_png::{read_png, read_png_reader};
 use wplace_tools::tar::ChunksTarReader;
-use wplace_tools::{collect_chunks, set_up_logger, stylized_progress_bar, CHUNK_LENGTH};
+use wplace_tools::{CHUNK_LENGTH, collect_chunks, set_up_logger, stylized_progress_bar};
 
 #[derive(clap::Parser)]
 struct Args {

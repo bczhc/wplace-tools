@@ -5,10 +5,9 @@
 #![warn(clippy::all, clippy::nursery)]
 
 use anyhow::anyhow;
-use chrono::format::Item;
 use clap::Parser;
 use lazy_regex::regex;
-use log::{debug, error, info};
+use log::{debug, info};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -16,12 +15,15 @@ use std::fs;
 use std::fs::File;
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
-use std::process::{abort, exit};
 use threadpool::ThreadPool;
-use wplace_tools::diff2::{DiffDataRange, IndexEntry};
+use wplace_tools::diff2::DiffDataRange;
 use wplace_tools::indexed_png::{read_png, read_png_reader, write_chunk_png, write_png};
 use wplace_tools::tar::ChunksTarReader;
-use wplace_tools::{apply_chunk, diff2, extract_datetime, flate2_decompress, open_file_range, quick_capture, set_up_logger, stylized_progress_bar, validate_chunk_checksum, ChunkNumber, ExitOnError, CHUNK_DIMENSION, CHUNK_LENGTH, CHUNK_WIDTH};
+use wplace_tools::{
+    CHUNK_DIMENSION, CHUNK_LENGTH, CHUNK_WIDTH, ChunkNumber, ExitOnError, apply_chunk, diff2,
+    extract_datetime, flate2_decompress, open_file_range, quick_capture, set_up_logger,
+    stylized_progress_bar, validate_chunk_checksum,
+};
 use yeet_ops::yeet;
 
 #[derive(clap::Parser)]
@@ -84,10 +86,7 @@ fn main() -> anyhow::Result<()> {
     let last_diff_list = diff_list
         .last()
         .ok_or_else(|| anyhow::anyhow!("Empty diff list!"))?;
-    let goal_snapshot = match &args.at {
-        None => last_diff_list,
-        Some(x) => x,
-    };
+    let goal_snapshot = args.at.as_ref().unwrap_or(last_diff_list);
 
     let Some(dest_snap_pos) = diff_list.iter().position(|x| x == goal_snapshot) else {
         yeet!(anyhow::anyhow!(
@@ -132,7 +131,7 @@ fn main() -> anyhow::Result<()> {
     info!("Retrieving...");
     let pb = stylized_progress_bar((apply_list.len() * chunks.len()) as u64);
 
-    let mut image_saver = ImageSaverPool::new()?;
+    let image_saver = ImageSaverPool::new()?;
 
     let mut chunks_buf = chunks
         .iter()
@@ -156,7 +155,7 @@ fn main() -> anyhow::Result<()> {
                 fs::create_dir_all(&chunk_out)?;
 
                 let mut diff_data = vec![0_u8; CHUNK_LENGTH];
-                let entry = map[name].get(&n);
+                let entry = map[name].get(n);
                 let entry = match entry {
                     None => {
                         // chunk had not been created in this snapshot
@@ -176,14 +175,14 @@ fn main() -> anyhow::Result<()> {
                         flate2_decompress(reader, &mut diff_data)?;
                         apply_chunk(chunk_buf, <&[_; _]>::try_from(&diff_data[..]).unwrap());
                         if !args.disable_csum {
-                            validate_chunk_checksum(&chunk_buf, entry.checksum)?;
+                            validate_chunk_checksum(chunk_buf, entry.checksum)?;
                         }
                     }
                 }
 
                 let img_path = chunk_out.join(format!("{name}.png"));
-                if args.all || (!args.all && is_last_snapshot) {
-                    write_chunk_png(&img_path, &chunk_buf)?;
+                if args.all || is_last_snapshot {
+                    write_chunk_png(&img_path, chunk_buf)?;
                     image_saver.submit(img_path, CHUNK_DIMENSION, chunk_buf.clone());
                 }
             };
@@ -194,12 +193,16 @@ fn main() -> anyhow::Result<()> {
             let stitch_out = args.out.join("stitched");
             fs::create_dir_all(&stitch_out)?;
 
-            if args.all || (!args.all && is_last_snapshot) {
+            if args.all || is_last_snapshot {
                 for x in &chunks_buf {
                     c.copy(x.0, <&[_; _]>::try_from(&x.1[..]).unwrap());
                 }
                 let out_file = stitch_out.join(format!("{name}.png"));
-                image_saver.submit(out_file, (c.dimension.0 as u32, c.dimension.1 as u32), c.buf);
+                image_saver.submit(
+                    out_file,
+                    (c.dimension.0 as u32, c.dimension.1 as u32),
+                    c.buf,
+                );
             }
         }
     }
@@ -236,15 +239,14 @@ fn parse_chunk_string(s: &str) -> anyhow::Result<Vec<ChunkNumber>> {
 
 /// `start` and `end` represent the two diagonal points.
 fn expand_chunks_range(start: ChunkNumber, end: ChunkNumber) -> Vec<(u16, u16)> {
-    fn range(n1: u16, n2: u16) -> RangeInclusive<u16> {
+    const fn range(n1: u16, n2: u16) -> RangeInclusive<u16> {
         if n1 < n2 { n1..=n2 } else { n2..=n1 }
     }
 
     let x_range = range(start.0, end.0);
     let y_range = range(start.1, end.1);
     let mut collected = x_range
-        .map(|x| y_range.clone().map(move |y| (x, y)))
-        .flatten()
+        .flat_map(|x| y_range.clone().map(move |y| (x, y)))
         .collect::<Vec<_>>();
     collected.sort();
     collected
@@ -328,6 +330,7 @@ impl Canvas {
         }
     }
 
+    #[allow(unused)]
     fn save(&self, out: impl AsRef<Path>) -> anyhow::Result<()> {
         write_png(
             out,
@@ -343,15 +346,15 @@ struct ImageSaverPool {
 }
 
 impl ImageSaverPool {
-    fn new() ->anyhow::Result<Self>{
+    fn new() -> anyhow::Result<Self> {
         Ok(Self {
-            pool: ThreadPool::new(num_cpus::get())
+            pool: ThreadPool::new(num_cpus::get()),
         })
     }
 
-    fn submit(&self, path: impl AsRef<Path> + Send + 'static, dimension: (u32,u32), buf: Vec<u8>) {
+    fn submit(&self, path: impl AsRef<Path> + Send + 'static, dimension: (u32, u32), buf: Vec<u8>) {
         self.pool.execute(move || {
-            let path =path;
+            let path = path;
             write_png(&path, dimension, &buf).exit_on_error();
             debug!("Saved: {}", path.as_ref().display());
         });
