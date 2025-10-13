@@ -26,7 +26,8 @@ use std::{env, fs, hint, io};
 use walkdir::WalkDir;
 use yeet_ops::yeet;
 
-pub const CHUNK_LENGTH: usize = 1_000_000;
+pub const CHUNK_WIDTH: usize = 1000;
+pub const CHUNK_LENGTH: usize = CHUNK_WIDTH * CHUNK_WIDTH;
 pub const MUTATION_MASK: u8 = 0b0100_0000;
 pub const PALETTE_INDEX_MASK: u8 = 0b0011_1111;
 
