@@ -7,6 +7,7 @@ use std::io::{BufReader, Take};
 use std::path::{Path, PathBuf};
 use tar::EntryType;
 
+#[derive(Copy, Clone)]
 pub struct Range {
     pub start: u64,
     pub size: u64,
