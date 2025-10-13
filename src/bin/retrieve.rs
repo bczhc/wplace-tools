@@ -40,9 +40,9 @@ struct Args {
     #[arg(short, long)]
     out: PathBuf,
 
-    /// Name of the goal snapshot.
+    /// Name of the goal snapshot. If not present, use the latest in `diff_dir`.
     #[arg(short = 't', long)]
-    at: String,
+    at: Option<String>,
 
     /// If enabled, instead of retrieving only the goal one, also retrieve all chunks prior to it.
     #[arg(short, long)]
@@ -71,8 +71,17 @@ fn main() -> anyhow::Result<()> {
         }
     }
     diff_list.sort();
+    let last_diff_list = diff_list.last().ok_or_else(|| anyhow::anyhow!("Empty diff list!"))?;
+    let goal_snapshot = match &args.at {
+        None => {
+            last_diff_list
+        }
+        Some(x) => {
+            x
+        }
+    };
 
-    let Some(dest_snap_pos) = diff_list.iter().position(|x| x == &args.at) else {
+    let Some(dest_snap_pos) = diff_list.iter().position(|x| x == goal_snapshot) else {
         yeet!(anyhow::anyhow!(
             "Cannot find the destination snapshot in the diff list"
         ));
