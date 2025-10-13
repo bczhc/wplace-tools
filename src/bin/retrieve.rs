@@ -11,20 +11,19 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::fs::File;
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::process::{abort, exit};
+use lazy_regex::regex;
 use wplace_tools::diff2::{DiffDataRange, IndexEntry};
 use wplace_tools::indexed_png::{read_png, read_png_reader, write_chunk_png};
 use wplace_tools::tar::ChunksTarReader;
-use wplace_tools::{
-    CHUNK_LENGTH, ChunkNumber, apply_chunk, diff2, extract_datetime, flate2_decompress,
-    open_file_range, set_up_logger, stylized_progress_bar, validate_chunk_checksum,
-};
+use wplace_tools::{CHUNK_LENGTH, ChunkNumber, apply_chunk, diff2, extract_datetime, flate2_decompress, open_file_range, set_up_logger, stylized_progress_bar, validate_chunk_checksum, quick_capture};
 use yeet_ops::yeet;
 
 #[derive(clap::Parser)]
 struct Args {
-    /// Chunk(s) to retrieve. Format: x-y[,x-y]..
+    /// Chunk(s) to retrieve. Format: x1-y1,x2-y2,x3-y3,... or x1-y1..x2-y2
     #[arg(short, long)]
     chunk: String,
 
@@ -182,12 +181,37 @@ fn parse_chunk_string(s: &str) -> anyhow::Result<Vec<ChunkNumber>> {
     let s = s.chars().filter(|x| !x.is_whitespace()).collect::<String>();
     let split = s.split(',');
     for x in split {
-        let split = x.split('-').collect::<Vec<_>>();
-        if split.len() == 2 {
-            chunks.push((split[0].parse()?, split[1].parse()?));
+        let p1 = regex!(r"^(\d+)\-(\d+)\.\.(\d+)\-(\d+)$");
+        let p2 = regex!(r"^(\d+)\-(\d+)$");
+        if p1.is_match(x) {
+            let group = quick_capture(x, p1).unwrap();
+            let start: ChunkNumber = (group[0].parse()?, group[1].parse()?);
+            let end: ChunkNumber = (group[2].parse()?, group[3].parse()?);
+            expand_chunks_range(start, end).iter().for_each(|&x| chunks.push(x));
+        } else if p2.is_match(x) {
+            let group = quick_capture(x, p2).unwrap();
+            chunks.push((group[0].parse()?, group[1].parse()?));
+        } else {
+            yeet!(anyhow::anyhow!("Malformed chunk string: {}", s))
         }
     }
     Ok(chunks)
+}
+
+/// `start` and `end` represent the two diagonal points.
+fn expand_chunks_range(start: ChunkNumber, end: ChunkNumber) -> Vec<(u16, u16)> {
+    fn range(n1: u16, n2: u16) -> RangeInclusive<u16> {
+        if n1 < n2 { n1..=n2 } else { n2..=n1 }
+    }
+
+    let x_range = range(start.0, end.0);
+    let y_range = range(start.1, end.1);
+    let mut collected = x_range
+        .map(|x| y_range.clone().map(move |y| (x, y)))
+        .flatten()
+        .collect::<Vec<_>>();
+    collected.sort();
+    collected
 }
 
 fn retrieve_chunk(snapshot: impl AsRef<Path>, n: ChunkNumber, allow_non_exist: bool) -> anyhow::Result<Vec<u8>> {

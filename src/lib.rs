@@ -16,9 +16,11 @@ use crate::indexed_png::{read_png, write_chunk_png};
 use indicatif::{ProgressBar, ProgressStyle};
 use lazy_regex::regex;
 use pathdiff::diff_paths;
+use regex::Regex;
 use std::env::set_var;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom, Take};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::{env, fs, hint, io};
 use walkdir::WalkDir;
@@ -258,4 +260,16 @@ pub fn validate_chunk_checksum(chunk: &[u8], checksum: u32) -> anyhow::Result<()
         yeet!(anyhow::anyhow!("Checksum not matched!"));
     }
     Ok(())
+}
+
+pub fn quick_capture<'a>(haystack: &'a str, pattern: &Regex) -> Option<Vec<&'a str>> {
+    let capture = pattern.captures(haystack)?;
+    Some(
+        capture
+            .iter()
+            .skip(1)
+            .map(|x| x.map(|x| x.as_str()))
+            .flatten()
+            .collect(),
+    )
 }
