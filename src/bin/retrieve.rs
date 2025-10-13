@@ -36,7 +36,7 @@ struct Args {
     #[arg(short, long)]
     diff_dir: PathBuf,
 
-    /// Path of the initial snapshot.
+    /// Path to the initial snapshot (tarball).
     #[arg(short, long)]
     base_snapshot: PathBuf,
 
@@ -111,6 +111,9 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or(0);
     let apply_list = &diff_list[base_start..=dest_snap_pos];
 
+    info!("Indexing tarball...");
+    let tar = ChunksTarReader::open_with_index(&args.base_snapshot)?;
+
     info!("Collecting index...");
     let progress = stylized_progress_bar(diff_list.len() as u64);
     let map = diff_list
@@ -136,7 +139,7 @@ fn main() -> anyhow::Result<()> {
     let mut chunks_buf = chunks
         .iter()
         .map(|&n| {
-            let a: anyhow::Result<_> = try { (n, retrieve_chunk(&args.base_snapshot, n, true)?) };
+            let a: anyhow::Result<_> = try { (n, retrieve_chunk(&tar, n, true)?) };
             a
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -253,30 +256,18 @@ fn expand_chunks_range(start: ChunkNumber, end: ChunkNumber) -> Vec<(u16, u16)> 
 }
 
 fn retrieve_chunk(
-    snapshot: impl AsRef<Path>,
+    snapshot: &ChunksTarReader,
     n: ChunkNumber,
     allow_non_exist: bool,
 ) -> anyhow::Result<Vec<u8>> {
     let mut buf = vec![0_u8; CHUNK_LENGTH];
-    let path = snapshot.as_ref();
-    if path.is_dir() {
-        let png_file = path.join(format!("{}/{}.png", n.0, n.1));
-        if png_file.exists() || !allow_non_exist {
-            read_png(png_file, &mut buf)?;
-        }
-    } else if path
-        .extension()
-        .map(|x| x.eq_ignore_ascii_case(OsStr::new("tar")))
-        .unwrap_or(false)
-    {
-        let tar = ChunksTarReader::open_with_index(path)?;
-        let chunk_reader = tar
-            .open_chunk(n)
-            .ok_or_else(|| anyhow::anyhow!("No such chunk"))??;
-        read_png_reader(chunk_reader, &mut buf)?;
-    } else {
-        yeet!(anyhow::anyhow!("Unknown snapshot type"));
+    if allow_non_exist && !snapshot.map.contains_key(&n) {
+        return Ok(buf);
     }
+    let chunk_reader = snapshot
+        .open_chunk(n).unwrap()?;
+
+    read_png_reader(chunk_reader, &mut buf)?;
     Ok(buf)
 }
 
