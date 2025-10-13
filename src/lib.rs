@@ -15,19 +15,23 @@ use crate::checksum::chunk_checksum;
 use crate::indexed_png::{read_png, write_chunk_png};
 use indicatif::{ProgressBar, ProgressStyle};
 use lazy_regex::regex;
+use log::error;
 use pathdiff::diff_paths;
 use regex::Regex;
 use std::env::set_var;
+use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom, Take};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::process::exit;
 use std::{env, fs, hint, io};
 use walkdir::WalkDir;
 use yeet_ops::yeet;
 
 pub const CHUNK_WIDTH: usize = 1000;
 pub const CHUNK_LENGTH: usize = CHUNK_WIDTH * CHUNK_WIDTH;
+pub const CHUNK_DIMENSION: (u32, u32) = (CHUNK_WIDTH as u32, CHUNK_WIDTH as u32);
 pub const MUTATION_MASK: u8 = 0b0100_0000;
 pub const PALETTE_INDEX_MASK: u8 = 0b0011_1111;
 
@@ -273,4 +277,25 @@ pub fn quick_capture<'a>(haystack: &'a str, pattern: &Regex) -> Option<Vec<&'a s
             .flatten()
             .collect(),
     )
+}
+
+pub trait ExitOnError<T, E>
+where
+    E: Display,
+    Self: Sized,
+{
+    fn exit_on_error(self) -> T;
+}
+
+impl<T, E: Display> ExitOnError<T, E> for Result<T, E>
+where
+    Self: Sized,
+{
+    #[inline(always)]
+    fn exit_on_error(self) -> T {
+        self.unwrap_or_else(|e| {
+            error!("Error occurred: {e}");
+            exit(1)
+        })
+    }
 }

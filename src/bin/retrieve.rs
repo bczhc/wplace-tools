@@ -8,7 +8,7 @@ use anyhow::anyhow;
 use chrono::format::Item;
 use clap::Parser;
 use lazy_regex::regex;
-use log::{error, info};
+use log::{debug, error, info};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -17,14 +17,11 @@ use std::fs::File;
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::process::{abort, exit};
+use threadpool::ThreadPool;
 use wplace_tools::diff2::{DiffDataRange, IndexEntry};
 use wplace_tools::indexed_png::{read_png, read_png_reader, write_chunk_png, write_png};
 use wplace_tools::tar::ChunksTarReader;
-use wplace_tools::{
-    apply_chunk, diff2, extract_datetime, flate2_decompress, open_file_range, quick_capture,
-    set_up_logger, stylized_progress_bar, validate_chunk_checksum, ChunkNumber, CHUNK_LENGTH,
-    CHUNK_WIDTH,
-};
+use wplace_tools::{apply_chunk, diff2, extract_datetime, flate2_decompress, open_file_range, quick_capture, set_up_logger, stylized_progress_bar, validate_chunk_checksum, ChunkNumber, ExitOnError, CHUNK_DIMENSION, CHUNK_LENGTH, CHUNK_WIDTH};
 use yeet_ops::yeet;
 
 #[derive(clap::Parser)]
@@ -135,6 +132,8 @@ fn main() -> anyhow::Result<()> {
     info!("Retrieving...");
     let pb = stylized_progress_bar((apply_list.len() * chunks.len()) as u64);
 
+    let mut image_saver = ImageSaverPool::new()?;
+
     let mut chunks_buf = chunks
         .iter()
         .map(|&n| {
@@ -185,12 +184,10 @@ fn main() -> anyhow::Result<()> {
                 let img_path = chunk_out.join(format!("{name}.png"));
                 if args.all || (!args.all && is_last_snapshot) {
                     write_chunk_png(&img_path, &chunk_buf)?;
+                    image_saver.submit(img_path, CHUNK_DIMENSION, chunk_buf.clone());
                 }
             };
-            if let Err(e) = result {
-                error!("Error: {e}");
-                exit(1);
-            }
+            result.exit_on_error();
         });
         // save the stitched image
         if let Some(mut c) = stitch_canvas {
@@ -202,13 +199,13 @@ fn main() -> anyhow::Result<()> {
                     c.copy(x.0, <&[_; _]>::try_from(&x.1[..]).unwrap());
                 }
                 let out_file = stitch_out.join(format!("{name}.png"));
-                info!("Save to {}",
-                    out_file.display());
-                c.save(out_file)?;
+                image_saver.submit(out_file, (c.dimension.0 as u32, c.dimension.1 as u32), c.buf);
             }
         }
     }
     pb.finish();
+    info!("Waiting for image saver...");
+    image_saver.join();
 
     Ok(())
 }
@@ -338,5 +335,29 @@ impl Canvas {
             &self.buf,
         )?;
         Ok(())
+    }
+}
+
+struct ImageSaverPool {
+    pool: ThreadPool,
+}
+
+impl ImageSaverPool {
+    fn new() ->anyhow::Result<Self>{
+        Ok(Self {
+            pool: ThreadPool::new(num_cpus::get())
+        })
+    }
+
+    fn submit(&self, path: impl AsRef<Path> + Send + 'static, dimension: (u32,u32), buf: Vec<u8>) {
+        self.pool.execute(move || {
+            let path =path;
+            write_png(&path, dimension, &buf).exit_on_error();
+            debug!("Saved: {}", path.as_ref().display());
+        });
+    }
+
+    fn join(self) {
+        self.pool.join();
     }
 }
