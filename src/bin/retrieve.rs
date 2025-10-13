@@ -120,17 +120,18 @@ fn main() -> anyhow::Result<()> {
         .collect::<HashMap<_, _>>();
     progress.finish();
 
+    info!("Retrieving...");
+    let pb = stylized_progress_bar((apply_list.len() * chunks.len()) as u64);
     chunks.into_iter().par_bridge().for_each(|n| {
         let result: anyhow::Result<()> = try {
-            info!("Processing chunk {:?}...", n);
             let chunk_out = args.out.join(format!("{}-{}", n.0, n.1));
             fs::create_dir_all(&chunk_out)?;
 
             let mut diff_data = vec![0_u8; CHUNK_LENGTH];
 
-            info!("{:?}: Retrieving initial chunk...", n);
             let mut base = retrieve_chunk(&args.base_snapshot, n, true)?;
             for (idx, name) in apply_list.iter().enumerate() {
+                pb.inc(1);
                 let entry = map[name].get(&n);
                 let entry = match entry {
                     None => {
@@ -141,7 +142,6 @@ fn main() -> anyhow::Result<()> {
                     Some(e) => {e}
                 };
 
-                info!("{:?}: Applying {name}...", n);
                 match entry.diff_data_range {
                     DiffDataRange::Unchanged => {
                         // just pass
@@ -172,6 +172,7 @@ fn main() -> anyhow::Result<()> {
             exit(1);
         }
     });
+    pb.finish();
 
     Ok(())
 }
