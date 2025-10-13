@@ -1,11 +1,12 @@
 #![feature(decl_macro)]
 #![feature(try_blocks)]
 
+use clap::Parser;
 use lazy_regex::regex;
 use log::{error, info};
 use rayon::prelude::*;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::{fs, io};
 use wplace_tools::indexed_png::{read_png, write_png};
@@ -13,10 +14,20 @@ use wplace_tools::{
     extract_datetime, quick_capture, set_up_logger, ChunkNumber, CHUNK_LENGTH, CHUNK_WIDTH,
 };
 
+#[derive(clap::Parser)]
+struct Args {
+    /// Directory to the output of `retrieve`.
+    dir: PathBuf,
+
+    /// Output directory.
+    out_dir: PathBuf,
+}
+
 fn main() -> anyhow::Result<()> {
     set_up_logger();
-    let dir = Path::new("/mnt/nvme/wplace-archives/mine/out");
-    let out_dir = Path::new("/mnt/nvme/wplace-archives/mine/stitched");
+    let args = Args::parse();
+    let dir = &args.dir;
+    let out_dir = &args.out_dir;
     fs::create_dir_all(out_dir)?;
     info!("Indexing...");
     let mut index: HashMap<ChunkNumber, Vec<String>> = Default::default();
