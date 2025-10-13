@@ -1,10 +1,13 @@
 #![feature(file_buffered)]
 #![feature(yeet_expr)]
 #![feature(try_blocks)]
+#![feature(decl_macro)]
 #![warn(clippy::all, clippy::nursery)]
 
 use anyhow::anyhow;
+use chrono::format::Item;
 use clap::Parser;
+use lazy_regex::regex;
 use log::{error, info};
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -14,11 +17,14 @@ use std::fs::File;
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::process::{abort, exit};
-use lazy_regex::regex;
 use wplace_tools::diff2::{DiffDataRange, IndexEntry};
-use wplace_tools::indexed_png::{read_png, read_png_reader, write_chunk_png};
+use wplace_tools::indexed_png::{read_png, read_png_reader, write_chunk_png, write_png};
 use wplace_tools::tar::ChunksTarReader;
-use wplace_tools::{CHUNK_LENGTH, ChunkNumber, apply_chunk, diff2, extract_datetime, flate2_decompress, open_file_range, set_up_logger, stylized_progress_bar, validate_chunk_checksum, quick_capture};
+use wplace_tools::{
+    apply_chunk, diff2, extract_datetime, flate2_decompress, open_file_range, quick_capture,
+    set_up_logger, stylized_progress_bar, validate_chunk_checksum, ChunkNumber, CHUNK_LENGTH,
+    CHUNK_WIDTH,
+};
 use yeet_ops::yeet;
 
 #[derive(clap::Parser)]
@@ -46,6 +52,14 @@ struct Args {
     /// If enabled, instead of retrieving only the goal one, also retrieve all chunks prior to it.
     #[arg(short, long)]
     all: bool,
+
+    /// Disable checksum validation. Only for debugging purposes.
+    #[arg(long, default_value = "false")]
+    disable_csum: bool,
+
+    /// Combine all the chunks together.
+    #[arg(short, long)]
+    stitch: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -70,14 +84,12 @@ fn main() -> anyhow::Result<()> {
         }
     }
     diff_list.sort();
-    let last_diff_list = diff_list.last().ok_or_else(|| anyhow::anyhow!("Empty diff list!"))?;
+    let last_diff_list = diff_list
+        .last()
+        .ok_or_else(|| anyhow::anyhow!("Empty diff list!"))?;
     let goal_snapshot = match &args.at {
-        None => {
-            last_diff_list
-        }
-        Some(x) => {
-            x
-        }
+        None => last_diff_list,
+        Some(x) => x,
     };
 
     let Some(dest_snap_pos) = diff_list.iter().position(|x| x == goal_snapshot) else {
@@ -122,24 +134,37 @@ fn main() -> anyhow::Result<()> {
 
     info!("Retrieving...");
     let pb = stylized_progress_bar((apply_list.len() * chunks.len()) as u64);
-    chunks.into_iter().par_bridge().for_each(|n| {
-        let result: anyhow::Result<()> = try {
-            let chunk_out = args.out.join(format!("{}-{}", n.0, n.1));
-            fs::create_dir_all(&chunk_out)?;
 
-            let mut diff_data = vec![0_u8; CHUNK_LENGTH];
+    let mut chunks_buf = chunks
+        .iter()
+        .map(|&n| {
+            let a: anyhow::Result<_> = try { (n, retrieve_chunk(&args.base_snapshot, n, true)?) };
+            a
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-            let mut base = retrieve_chunk(&args.base_snapshot, n, true)?;
-            for (idx, name) in apply_list.iter().enumerate() {
-                pb.inc(1);
+    for (idx, name) in apply_list.iter().enumerate() {
+        let is_last_snapshot = idx == apply_list.len() - 1;
+        let stitch_canvas = match args.stitch {
+            true => Some(Canvas::from_chunk_list(chunks_buf.iter().map(|x| x.0))),
+            false => None,
+        };
+
+        chunks_buf.par_iter_mut().for_each(|(n, chunk_buf)| {
+            pb.inc(1);
+            let result: anyhow::Result<()> = try {
+                let chunk_out = args.out.join(format!("{}-{}", n.0, n.1));
+                fs::create_dir_all(&chunk_out)?;
+
+                let mut diff_data = vec![0_u8; CHUNK_LENGTH];
                 let entry = map[name].get(&n);
                 let entry = match entry {
                     None => {
                         // chunk had not been created in this snapshot
                         info!("Chunk not present in this snapshot '{}', skipping...", name);
-                        continue
+                        return;
                     }
-                    Some(e) => {e}
+                    Some(e) => e,
                 };
 
                 match entry.diff_data_range {
@@ -150,28 +175,39 @@ fn main() -> anyhow::Result<()> {
                         let reader =
                             open_file_range(diff_path.join(format!("{name}.diff")), pos, len)?;
                         flate2_decompress(reader, &mut diff_data)?;
-                        apply_chunk(&mut base, <&[_; _]>::try_from(&diff_data[..]).unwrap());
-                        validate_chunk_checksum(&base, entry.checksum)?;
+                        apply_chunk(chunk_buf, <&[_; _]>::try_from(&diff_data[..]).unwrap());
+                        if !args.disable_csum {
+                            validate_chunk_checksum(&chunk_buf, entry.checksum)?;
+                        }
                     }
                 }
 
                 let img_path = chunk_out.join(format!("{name}.png"));
-                match args.all {
-                    true => {
-                        write_chunk_png(&img_path, &base)?;
-                    }
-                    false if idx == apply_list.len() - 1 => {
-                        write_chunk_png(&img_path, &base)?;
-                    }
-                    _ => {}
+                if args.all || (!args.all && is_last_snapshot) {
+                    write_chunk_png(&img_path, &chunk_buf)?;
                 }
+            };
+            if let Err(e) = result {
+                error!("Error: {e}");
+                exit(1);
             }
-        };
-        if let Err(e) = result {
-            error!("Error occurred: {e}");
-            exit(1);
+        });
+        // save the stitched image
+        if let Some(mut c) = stitch_canvas {
+            let stitch_out = args.out.join("stitched");
+            fs::create_dir_all(&stitch_out)?;
+
+            if args.all || (!args.all && is_last_snapshot) {
+                for x in &chunks_buf {
+                    c.copy(x.0, <&[_; _]>::try_from(&x.1[..]).unwrap());
+                }
+                let out_file = stitch_out.join(format!("{name}.png"));
+                info!("Save to {}",
+                    out_file.display());
+                c.save(out_file)?;
+            }
         }
-    });
+    }
     pb.finish();
 
     Ok(())
@@ -188,7 +224,9 @@ fn parse_chunk_string(s: &str) -> anyhow::Result<Vec<ChunkNumber>> {
             let group = quick_capture(x, p1).unwrap();
             let start: ChunkNumber = (group[0].parse()?, group[1].parse()?);
             let end: ChunkNumber = (group[2].parse()?, group[3].parse()?);
-            expand_chunks_range(start, end).iter().for_each(|&x| chunks.push(x));
+            expand_chunks_range(start, end)
+                .iter()
+                .for_each(|&x| chunks.push(x));
         } else if p2.is_match(x) {
             let group = quick_capture(x, p2).unwrap();
             chunks.push((group[0].parse()?, group[1].parse()?));
@@ -215,7 +253,11 @@ fn expand_chunks_range(start: ChunkNumber, end: ChunkNumber) -> Vec<(u16, u16)> 
     collected
 }
 
-fn retrieve_chunk(snapshot: impl AsRef<Path>, n: ChunkNumber, allow_non_exist: bool) -> anyhow::Result<Vec<u8>> {
+fn retrieve_chunk(
+    snapshot: impl AsRef<Path>,
+    n: ChunkNumber,
+    allow_non_exist: bool,
+) -> anyhow::Result<Vec<u8>> {
     let mut buf = vec![0_u8; CHUNK_LENGTH];
     let path = snapshot.as_ref();
     if path.is_dir() {
@@ -237,4 +279,64 @@ fn retrieve_chunk(snapshot: impl AsRef<Path>, n: ChunkNumber, allow_non_exist: b
         yeet!(anyhow::anyhow!("Unknown snapshot type"));
     }
     Ok(buf)
+}
+
+struct Canvas {
+    buf: Vec<u8>,
+    min_chunk: ChunkNumber,
+    pub dimension: (usize, usize),
+}
+
+impl Canvas {
+    fn new(chunk_num_x: u16, chunk_num_y: u16, min_chunk: ChunkNumber) -> Self {
+        let dimension = (
+            chunk_num_x as usize * CHUNK_WIDTH,
+            chunk_num_y as usize * CHUNK_WIDTH,
+        );
+        let buf = vec![0_u8; dimension.0 * dimension.1];
+        Self {
+            buf,
+            min_chunk,
+            dimension,
+        }
+    }
+
+    fn from_chunk_list(chunks: impl Iterator<Item = ChunkNumber>) -> Self {
+        let chunks = chunks.collect::<Vec<_>>();
+        let min_x = chunks.iter().map(|x| x.0).min().unwrap();
+        let max_x = chunks.iter().map(|x| x.0).max().unwrap();
+        let min_y = chunks.iter().map(|x| x.1).min().unwrap();
+        let max_y = chunks.iter().map(|x| x.1).max().unwrap();
+        Self::new(max_x - min_x + 1, max_y - min_y + 1, (min_x, min_y))
+    }
+
+    fn copy(&mut self, n: ChunkNumber, buf: &[u8; CHUNK_LENGTH]) {
+        macro chunk_pixel($buf:expr, $x:expr, $y:expr) {
+            $buf[$y * CHUNK_WIDTH + $x]
+        }
+        macro canvas_pixel($buf:expr, $x:expr, $y:expr) {
+            $buf[$y * self.dimension.0 + $x]
+        }
+
+        let (chunk_x, chunk_y) = n;
+        let (min_x, min_y) = self.min_chunk;
+
+        let rel_x = (chunk_x - min_x) as usize * CHUNK_WIDTH;
+        let rel_y = (chunk_y - min_y) as usize * CHUNK_WIDTH;
+
+        for y in 0..CHUNK_WIDTH {
+            for x in 0..CHUNK_WIDTH {
+                canvas_pixel!(self.buf, (rel_x + x), (rel_y + y)) = chunk_pixel!(buf, x, y);
+            }
+        }
+    }
+
+    fn save(&self, out: impl AsRef<Path>) -> anyhow::Result<()> {
+        write_png(
+            out,
+            (self.dimension.0 as u32, self.dimension.1 as u32),
+            &self.buf,
+        )?;
+        Ok(())
+    }
 }
