@@ -1,0 +1,8 @@
+#!/bin/bash
+
+cargo build -r --target x86_64-unknown-linux-musl
+cargo build -r --target x86_64-pc-windows-gnu
+
+cd target
+tar -C x86_64-unknown-linux-musl/release -c {retrieve,archive-tool} -Jf x86_64-unknown-linux-musl.tar.xz
+tar -C x86_64-pc-windows-gnu/release -c {retrieve,archive-tool}.exe -Jf x86_64-pc-windows-gnu.tar.xz
