@@ -35,6 +35,8 @@ mod cli {
     use wplace_tools::TilesRange;
 
     #[derive(Debug, Parser)]
+    #[command(version)]
+    /// Tools for Wplace snapshots
     pub struct Cli {
         #[command(subcommand)]
         pub command: Commands,
@@ -42,7 +44,7 @@ mod cli {
 
     #[derive(Debug, Subcommand)]
     pub enum Commands {
-        /// Create diff from `base` to `new`.
+        /// Create diff from `base` to `new`
         Diff {
             #[arg(value_name = "BASE", value_hint = ValueHint::FilePath)]
             base: PathBuf,
@@ -54,7 +56,7 @@ mod cli {
             output: PathBuf,
         },
 
-        /// Apply diff on `base`.
+        /// Apply `diff` on `base`
         Apply {
             #[arg(value_name = "BASE", value_hint = ValueHint::FilePath)]
             base: PathBuf,
@@ -75,8 +77,8 @@ mod cli {
             new: PathBuf,
         },
 
-        /// Merely copy the chunks. This is useful when used with `tiles_range`.
-        Copy {
+        /// Filter chunk files by `tiles_range`
+        Filter {
             #[arg(value_name = "BASE", value_hint = ValueHint::FilePath)]
             base: PathBuf,
 
@@ -87,7 +89,7 @@ mod cli {
             tiles_range_arg: TilesRangeArg,
         },
 
-        /// Print info of the diff file.
+        /// Print info of a diff file
         Show {
             #[arg(value_hint = ValueHint::FilePath)]
             diff: PathBuf,
@@ -265,7 +267,7 @@ fn main() -> anyhow::Result<()> {
             });
             progress.finish();
         }
-        Commands::Copy {
+        Commands::Filter {
             base,
             output,
             tiles_range_arg,

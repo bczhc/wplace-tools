@@ -20,35 +20,40 @@ use wplace_tools::diff2::DiffDataRange;
 use wplace_tools::indexed_png::{read_png, read_png_reader, write_chunk_png, write_png};
 use wplace_tools::tar::ChunksTarReader;
 use wplace_tools::{
-    CHUNK_DIMENSION, CHUNK_LENGTH, CHUNK_WIDTH, ChunkNumber, ExitOnError, apply_chunk, diff2,
-    extract_datetime, flate2_decompress, open_file_range, quick_capture, set_up_logger,
-    stylized_progress_bar, validate_chunk_checksum,
+    apply_chunk, diff2, extract_datetime, flate2_decompress, open_file_range, quick_capture, set_up_logger,
+    stylized_progress_bar, validate_chunk_checksum, ChunkNumber, ExitOnError, CHUNK_DIMENSION,
+    CHUNK_LENGTH, CHUNK_WIDTH,
 };
 use yeet_ops::yeet;
 
 #[derive(clap::Parser)]
+#[command(version)]
+/// Chunk image retrieval tool
+
 struct Args {
     /// Chunk(s) to retrieve. Format: x1-y1,x2-y2,x3-y3,... or x1-y1..x2-y2
     #[arg(short, long)]
     chunk: String,
 
-    /// Directory storing .diff files.
+    /// Directory containing all the consecutive .diff files
     #[arg(short, long)]
     diff_dir: PathBuf,
 
-    /// Path to the initial snapshot (tarball).
+    /// Path to the initial snapshot (tarball format)
     #[arg(short, long)]
     base_snapshot: PathBuf,
 
-    /// Output path.
+    /// Output path
     #[arg(short, long)]
     out: PathBuf,
 
-    /// Name of the goal snapshot. If not present, use the latest in `diff_dir`.
+    /// Snapshot name of the restoration point. If not present, use the newest one in `diff_dir`.
     #[arg(short = 't', long)]
     at: Option<String>,
 
-    /// If enabled, instead of retrieving only the goal one, also retrieve all chunks prior to it.
+    /// If enabled, instead of retrieving only the target one, also retrieve all chunks prior to it.
+    ///
+    /// By this, timelapse videos can be easily created.
     #[arg(short, long)]
     all: bool,
 
@@ -56,7 +61,7 @@ struct Args {
     #[arg(long, default_value = "false")]
     disable_csum: bool,
 
-    /// Combine all the chunks together.
+    /// Stitch chunks together to a big image.
     #[arg(short, long)]
     stitch: bool,
 }
@@ -264,8 +269,7 @@ fn retrieve_chunk(
     if allow_non_exist && !snapshot.map.contains_key(&n) {
         return Ok(buf);
     }
-    let chunk_reader = snapshot
-        .open_chunk(n).unwrap()?;
+    let chunk_reader = snapshot.open_chunk(n).unwrap()?;
 
     read_png_reader(chunk_reader, &mut buf)?;
     Ok(buf)
