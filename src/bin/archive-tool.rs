@@ -7,26 +7,26 @@
 
 use crate::cli::Commands;
 use clap::Parser;
-use flate2::{Compression, write};
+use flate2::{write, Compression};
 use log::{debug, error, info};
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::ffi::OsStr;
-use std::fs::File;
+use std::fs::{read, File};
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::sync::mpsc::sync_channel;
 use std::thread::spawn;
-use std::{fs, hint};
+use std::{fs, hint, io};
 use tempfile::NamedTempFile;
 use wplace_tools::checksum::chunk_checksum;
 use wplace_tools::diff2::{DiffDataRange, Metadata};
 use wplace_tools::indexed_png::{read_png, read_png_reader};
 use wplace_tools::tar::ChunksTarReader;
 use wplace_tools::{
-    CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK, apply_png, collect_chunks, diff2,
-    new_chunk_file, open_file_range, set_up_logger, stylized_progress_bar,
+    apply_png, collect_chunks, diff2, new_chunk_file, open_file_range, set_up_logger, stylized_progress_bar,
+    ExitOnError, CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK,
 };
 
 mod cli {
@@ -35,7 +35,6 @@ mod cli {
     use wplace_tools::TilesRange;
 
     #[derive(Debug, Parser)]
-    #[command(version)]
     /// Tools for Wplace snapshots
     pub struct Cli {
         #[command(subcommand)]
@@ -91,6 +90,12 @@ mod cli {
 
         /// Print info of a diff file
         Show {
+            #[arg(value_hint = ValueHint::FilePath)]
+            diff: PathBuf,
+        },
+
+        /// Test a diff file.
+        Test {
             #[arg(value_hint = ValueHint::FilePath)]
             diff: PathBuf,
         },
@@ -302,6 +307,29 @@ fn main() -> anyhow::Result<()> {
                     .filter(|x| x.1.diff_data_range.is_changed())
                     .count()
             );
+        }
+
+        Commands::Test { diff } => {
+            let mut reader = diff2::DiffFile::open(File::open_buffered(&diff)?)?;
+            let index = reader.read_index()?;
+            assert_eq!(reader.entry_count as usize, index.len());
+            let pb = stylized_progress_bar(index.len() as u64);
+            index.into_par_iter().for_each(|(n, e)| {
+                let result: anyhow::Result<()> = try {
+                    match e.diff_data_range {
+                        DiffDataRange::Unchanged => {}
+                        DiffDataRange::Changed { pos, len } => {
+                            let portion = open_file_range(&diff, pos, len)?;
+                            let mut decoder = flate2::read::DeflateDecoder::new(portion);
+                            io::copy(&mut decoder, &mut io::sink())?;
+                        }
+                    }
+                    pb.inc(1);
+                };
+                result.exit_on_error();
+            });
+            pb.finish();
+            println!("Done.");
         }
     }
 
