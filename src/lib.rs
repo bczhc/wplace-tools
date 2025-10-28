@@ -12,7 +12,7 @@ pub mod tar;
 pub mod zip;
 
 use crate::checksum::chunk_checksum;
-use crate::indexed_png::{read_png, write_chunk_png};
+use crate::indexed_png::{read_png, write_chunk_png, write_png};
 use indicatif::{ProgressBar, ProgressStyle};
 use lazy_regex::regex;
 use log::error;
@@ -295,5 +295,67 @@ where
             error!("Error occurred: {e}");
             exit(1)
         })
+    }
+}
+
+/// Canvas for chunk image merging.
+pub struct Canvas {
+    pub buf: Vec<u8>,
+    min_chunk: ChunkNumber,
+    pub dimension: (usize, usize),
+}
+
+impl Canvas {
+    pub fn new(chunk_num_x: u16, chunk_num_y: u16, min_chunk: ChunkNumber) -> Self {
+        let dimension = (
+            chunk_num_x as usize * CHUNK_WIDTH,
+            chunk_num_y as usize * CHUNK_WIDTH,
+        );
+        let buf = vec![0_u8; dimension.0 * dimension.1];
+        Self {
+            buf,
+            min_chunk,
+            dimension,
+        }
+    }
+
+    pub fn from_chunk_list(chunks: impl Iterator<Item = ChunkNumber>) -> Self {
+        let chunks = chunks.collect::<Vec<_>>();
+        let min_x = chunks.iter().map(|x| x.0).min().unwrap();
+        let max_x = chunks.iter().map(|x| x.0).max().unwrap();
+        let min_y = chunks.iter().map(|x| x.1).min().unwrap();
+        let max_y = chunks.iter().map(|x| x.1).max().unwrap();
+        Self::new(max_x - min_x + 1, max_y - min_y + 1, (min_x, min_y))
+    }
+
+    pub fn copy(&mut self, n: ChunkNumber, buf: &[u8; CHUNK_LENGTH]) {
+        macro chunk_pixel($buf:expr, $x:expr, $y:expr) {
+            $buf[$y * CHUNK_WIDTH + $x]
+        }
+        macro canvas_pixel($buf:expr, $x:expr, $y:expr) {
+            $buf[$y * self.dimension.0 + $x]
+        }
+
+        let (chunk_x, chunk_y) = n;
+        let (min_x, min_y) = self.min_chunk;
+
+        let rel_x = (chunk_x - min_x) as usize * CHUNK_WIDTH;
+        let rel_y = (chunk_y - min_y) as usize * CHUNK_WIDTH;
+
+        for y in 0..CHUNK_WIDTH {
+            for x in 0..CHUNK_WIDTH {
+                canvas_pixel!(self.buf, (rel_x + x), (rel_y + y)) = chunk_pixel!(buf, x, y);
+            }
+        }
+    }
+
+    #[allow(unused)]
+    pub fn save(&self, out: impl AsRef<Path>) -> anyhow::Result<()> {
+        write_png(
+            out,
+            (self.dimension.0 as u32, self.dimension.1 as u32),
+            &self.buf,
+        )?;
+        Ok(())
     }
 }
