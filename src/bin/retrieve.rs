@@ -8,9 +8,9 @@ use anyhow::anyhow;
 use byteorder::{LittleEndian, WriteBytesExt, LE};
 use clap::Parser;
 use lazy_regex::regex;
-use log::{debug, info};
+use log::{debug, info, warn};
 use rayon::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::fs::File;
@@ -47,7 +47,7 @@ struct Args {
 
     /// RocksDB folder for diff index
     #[arg(short = 'i', long)]
-    diff_index: PathBuf,
+    index_db: PathBuf,
 
     /// Path to the initial snapshot (tarball format)
     #[arg(short, long)]
@@ -113,12 +113,18 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or(0);
     let apply_list = &diff_list[base_start..=dest_snap_pos];
 
+    let diff_list_not_processed=collect_diff_list_not_processed(diff_list.clone(), &args.index_db)?;
+    if !diff_list_not_processed.is_empty() {
+        warn!("Diff index database missing or incomplete; creating it...");
+        create_index_db(diff_path.into(), diff_list.clone(), diff_list_not_processed, (&args.index_db).into())?;
+    }
+
     info!("Indexing tarball...");
     let tar = ChunksTarReader::open_with_index(&args.base_snapshot)?;
 
     info!("Opening index db...");
     let options = Options::default();
-    let index_db = DB::open(&options, args.diff_index)?;
+    let index_db = DB::open(&options, args.index_db)?;
 
     info!("Retrieving...");
     let pb = stylized_progress_bar((apply_list.len() * chunks.len()) as u64);
@@ -292,4 +298,86 @@ impl ImageSaverPool {
     fn join(self) {
         self.pool.join();
     }
+}
+
+fn collect_diff_list_not_processed(diff_list: Vec<String>, db_path: impl AsRef<Path>) -> anyhow::Result<Vec<String>> {
+    let track_file_path = db_path.as_ref().join("processed.txt");
+    let mut processed = std::collections::HashSet::new();
+    if track_file_path.exists() {
+        processed = std::fs::read_to_string(&track_file_path)?
+            .lines()
+            .map(|s| s.to_string())
+            .collect();
+    }
+
+    // skip diff files already processed
+    let diff_list = diff_list
+        .into_iter()
+        .filter(|x| !processed.contains(x))
+        .collect::<Vec<_>>();
+    Ok(diff_list)
+}
+
+fn create_index_db(
+    diff_path: PathBuf,
+    diff_list: Vec<String>,
+    diff_list_not_processed: Vec<String>,
+    db_path: PathBuf,
+) -> anyhow::Result<()> {
+    let track_file_path = db_path.join("processed.txt");
+    let remaining_diff_list_len = diff_list_not_processed.len();
+    info!("Number of all diff files: {}", diff_list.len());
+    info!("Skipped {} diff files", diff_list.len() - remaining_diff_list_len);
+
+    let (tx, rx) = sync_channel(16);
+
+    spawn(move || {
+        diff_list_not_processed.par_iter().for_each(|x| {
+            let mut reader = diff2::DiffFile::open(
+                File::open_buffered(diff_path.join(format!("{x}.diff"))).unwrap(),
+            )
+                .unwrap();
+            let index = reader.read_index().unwrap();
+            tx.send((x.clone(), index)).unwrap();
+        });
+    });
+
+    let mut opts = rocksdb::Options::default();
+    opts.create_if_missing(true);
+    opts.set_max_background_jobs(16);
+    opts.set_write_buffer_size(256 * 1048576);
+    opts.set_row_cache(&rocksdb::Cache::new_lru_cache(1 << 30));
+    opts.set_blob_cache(&rocksdb::Cache::new_lru_cache(1 << 30));
+    opts.set_compression_type(DBCompressionType::Zlib);
+    opts.increase_parallelism(16);
+    let db = rocksdb::DB::open(&opts, db_path.clone())?;
+
+    let pb = stylized_progress_bar(remaining_diff_list_len as u64);
+    let config = bincode::config::standard();
+
+    let mut track_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&track_file_path)?;
+
+    rx.into_iter().for_each(|(diff_name, index)| {
+        let mut key_buf = [0_u8; 100];
+        let mut value_buf = [0_u8; 100];
+
+        let mut write_batch = WriteBatch::new();
+        for x in index {
+            let key = make_key(&diff_name, x.0, &mut key_buf);
+            let value_len = bincode::encode_into_slice(x.1, &mut value_buf, config).unwrap();
+            let value = &value_buf[..value_len];
+            write_batch.put(&key, value);
+        }
+        db.write(write_batch).unwrap();
+        db.flush().unwrap();
+
+        writeln!(track_file, "{}", diff_name).unwrap();
+        track_file.flush().unwrap();
+        pb.inc(1);
+    });
+    pb.finish();
+    Ok(())
 }
