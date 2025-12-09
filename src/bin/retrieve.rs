@@ -10,26 +10,24 @@ use lazy_regex::regex;
 use log::{debug, info};
 use rayon::prelude::*;
 use std::collections::HashMap;
-use std::ffi::OsStr;
 use std::fs;
 use std::fs::File;
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use threadpool::ThreadPool;
 use wplace_tools::diff2::DiffDataRange;
-use wplace_tools::indexed_png::{read_png, read_png_reader, write_chunk_png, write_png};
+use wplace_tools::indexed_png::{read_png_reader, write_chunk_png, write_png};
 use wplace_tools::tar::ChunksTarReader;
 use wplace_tools::{
+    CHUNK_DIMENSION, CHUNK_LENGTH, Canvas, ChunkNumber, ChunkProcessError, ExitOnError,
     apply_chunk, diff2, extract_datetime, flate2_decompress, open_file_range, quick_capture,
-    set_up_logger, stylized_progress_bar, validate_chunk_checksum, Canvas, ChunkNumber, ChunkProcessError,
-    ExitOnError, CHUNK_DIMENSION, CHUNK_LENGTH, CHUNK_WIDTH,
+    set_up_logger, stylized_progress_bar, validate_chunk_checksum,
 };
 use yeet_ops::yeet;
 
 #[derive(clap::Parser)]
 #[command(version)]
 /// Chunk image retrieval tool
-
 struct Args {
     /// Chunk(s) to retrieve. Format: x1-y1,x2-y2,x3-y3,... or x1-y1..x2-y2
     #[arg(short, long)]

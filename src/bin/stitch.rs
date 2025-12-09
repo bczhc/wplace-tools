@@ -1,11 +1,11 @@
 use clap::Parser;
+use lazy_regex::regex;
 use rayon::prelude::*;
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
-use lazy_regex::regex;
-use wplace_tools::{stylized_progress_bar, Canvas, ChunkNumber, CHUNK_LENGTH};
 use wplace_tools::indexed_png::read_png;
+use wplace_tools::{CHUNK_LENGTH, Canvas, ChunkNumber, stylized_progress_bar};
 
 #[derive(clap::Parser)]
 struct Args {
@@ -32,10 +32,10 @@ fn main() -> anyhow::Result<()> {
                 let file_entry = file_entry?;
                 let file_path = file_entry.path();
 
-                if file_path.is_file() {
-                    if let Some(name) = file_path.file_name().and_then(|n| n.to_str()) {
-                        filenames.insert(name.to_string());
-                    }
+                if file_path.is_file()
+                    && let Some(name) = file_path.file_name().and_then(|n| n.to_str())
+                {
+                    filenames.insert(name.to_string());
                 }
             }
         }
@@ -60,7 +60,7 @@ fn main() -> anyhow::Result<()> {
     filenames.into_par_iter().for_each(|x| {
         let mut canvas = Canvas::from_chunk_list(chunk_list.iter().copied());
         for n in &chunk_list {
-            let img_path = args.dir.join(format!("{}-{}", n.0,n.1)).join(&x);
+            let img_path = args.dir.join(format!("{}-{}", n.0, n.1)).join(&x);
             let mut img_buf = vec![0_u8; CHUNK_LENGTH];
             if img_path.exists() {
                 read_png(&img_path, &mut img_buf).unwrap();

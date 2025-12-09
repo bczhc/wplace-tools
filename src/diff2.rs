@@ -8,7 +8,7 @@
 //! Magic (\[u8; 11\]) | IndexPos (u64) | EntryCount (u32) | [`Metadata`] | diff data... (\[u8\]) | [`IndexEntry`]...
 
 use crate::ChunkNumber;
-use byteorder::{ReadBytesExt, WriteBytesExt, LE};
+use byteorder::{LE, ReadBytesExt, WriteBytesExt};
 use num_enum::TryFromPrimitive;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

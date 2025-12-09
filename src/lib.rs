@@ -12,7 +12,8 @@ pub mod tar;
 pub mod zip;
 
 use crate::checksum::chunk_checksum;
-use crate::indexed_png::{read_png, read_png_reader, write_chunk_png, write_png};
+use crate::indexed_png::{read_png, read_png_reader, write_png};
+use crate::tar::ChunksTarReader;
 use indicatif::{ProgressBar, ProgressStyle};
 use lazy_regex::regex;
 use log::error;
@@ -27,7 +28,6 @@ use std::process::exit;
 use std::{env, fmt, fs, hint, io};
 use walkdir::WalkDir;
 use yeet_ops::yeet;
-use crate::tar::ChunksTarReader;
 
 pub const CHUNK_WIDTH: usize = 1000;
 pub const CHUNK_LENGTH: usize = CHUNK_WIDTH * CHUNK_WIDTH;
@@ -362,7 +362,7 @@ pub trait ChunkFetcher {
     fn chunks_len(&self) -> usize;
 
     fn fetch(&self, n: ChunkNumber, buf: &mut [u8]) -> anyhow::Result<bool>;
-    
+
     fn fetch_raw(&self, n: ChunkNumber) -> anyhow::Result<Vec<u8>>;
 }
 
@@ -386,19 +386,14 @@ impl DirChunkFetcher {
 
 impl ChunkFetcher for DirChunkFetcher {
     fn chunks_iter(&self) -> Box<dyn Iterator<Item = ChunkNumber> + Send + '_> {
-        let Some(c) = self.chunks.as_ref().take() else {
-            return Box::new([].iter().copied());
+        let Some(c) = self.chunks.as_ref() else {
+            return Box::new(std::iter::empty());
         };
         Box::new(c.iter().copied())
     }
 
     fn chunks_len(&self) -> usize {
-        match &self.chunks {
-            None => {0}
-            Some(c) => {
-                c.len()
-            }
-        }
+        self.chunks.as_ref().map_or(0, |x| x.len())
     }
 
     fn fetch(&self, (x, y): ChunkNumber, buf: &mut [u8]) -> anyhow::Result<bool> {
@@ -410,7 +405,7 @@ impl ChunkFetcher for DirChunkFetcher {
         Ok(true)
     }
 
-    fn fetch_raw(&self, (x,y): ChunkNumber) -> anyhow::Result<Vec<u8>> {
+    fn fetch_raw(&self, (x, y): ChunkNumber) -> anyhow::Result<Vec<u8>> {
         let file = self.root.join(format!("{x}/{y}.png"));
         let mut vec = Vec::new();
         if file.exists() {
@@ -427,14 +422,12 @@ pub struct TarChunkFetcher {
 impl TarChunkFetcher {
     pub fn new(tar: impl AsRef<Path>) -> anyhow::Result<Self> {
         let reader = ChunksTarReader::open_with_index(tar)?;
-        Ok(Self {
-            reader
-        })
+        Ok(Self { reader })
     }
 }
 
 impl ChunkFetcher for TarChunkFetcher {
-    fn chunks_iter(&self) -> Box<dyn Iterator<Item=ChunkNumber> + Send + '_> {
+    fn chunks_iter(&self) -> Box<dyn Iterator<Item = ChunkNumber> + Send + '_> {
         Box::new(self.reader.map.keys().copied())
     }
 
