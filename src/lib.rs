@@ -452,3 +452,49 @@ impl ChunkFetcher for TarChunkFetcher {
         Ok(vec)
     }
 }
+
+pub mod diff_index {
+    use std::ffi::OsStr;
+    use std::path::Path;
+    use anyhow::anyhow;
+    use byteorder::LE;
+    use crate::{extract_datetime, ChunkNumber};
+
+    #[inline(always)]
+    pub fn make_key<'a>(diff_name: &str, chunk: ChunkNumber, key_buf: &'a mut [u8]) -> &'a [u8] {
+        let buf = key_buf;
+        let diff_name_len = diff_name.as_bytes().len();
+        assert!(buf.len() >= diff_name_len + 4);
+        buf[..diff_name_len].copy_from_slice(diff_name.as_bytes());
+        use byteorder::ByteOrder;
+        LE::write_u16(&mut buf[diff_name_len..], chunk.0);
+        LE::write_u16(&mut buf[(diff_name_len + 2)..], chunk.1);
+        &buf[..(diff_name_len + 4)]
+    }
+    
+    pub fn collect_diff_files(root: impl AsRef<Path>) -> anyhow::Result<Vec<String>> {
+        let mut diff_list = Vec::new();
+        for x in walkdir::WalkDir::new(root) {
+            let x = x?;
+            if x.path()
+                .extension()
+                .map(|x| x.to_ascii_lowercase())
+                .as_deref()
+                != Some(OsStr::new("diff"))
+            {
+                continue;
+            }
+            if x.path().is_file() {
+                let filename = x
+                    .file_name()
+                    .to_str()
+                    .ok_or_else(|| anyhow!("Invalid filename"))?;
+                diff_list.push(
+                    extract_datetime(filename).ok_or_else(|| anyhow!("Malformed diff filename"))?,
+                );
+            }
+        }
+        diff_list.sort();
+        Ok(diff_list)
+    }
+}

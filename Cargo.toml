@@ -35,3 +35,4 @@ num_enum = "0.7.4"
 crc-fast = "1.5.0"
 threadpool = "1.8.1"
 num_cpus = "1.17.0"
+rocksdb = {version = "0.24.0", default-features = false, features = ["zlib", "zstd"]}

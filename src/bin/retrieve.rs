@@ -5,6 +5,7 @@
 #![warn(clippy::all, clippy::nursery)]
 
 use anyhow::anyhow;
+use byteorder::{LittleEndian, WriteBytesExt, LE};
 use clap::Parser;
 use lazy_regex::regex;
 use log::{debug, info};
@@ -13,11 +14,15 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::fs::File;
-use std::io::{stdin, Read};
+use std::io::{stdin, Cursor, Read, Write};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::sync_channel;
+use std::thread::spawn;
+use bincode::config::standard;
+use rocksdb::{DBCompressionType, Options, WriteBatch, WriteOptions, DB};
 use threadpool::ThreadPool;
-use wplace_tools::diff2::DiffDataRange;
+use wplace_tools::diff2::{DiffDataRange, IndexEntry};
 use wplace_tools::indexed_png::{read_png_reader, write_chunk_png, write_png};
 use wplace_tools::tar::ChunksTarReader;
 use wplace_tools::{
@@ -26,6 +31,7 @@ use wplace_tools::{
     ExitOnError, CHUNK_DIMENSION, CHUNK_LENGTH,
 };
 use yeet_ops::yeet;
+use wplace_tools::diff_index::{collect_diff_files, make_key};
 
 #[derive(clap::Parser)]
 #[command(version)]
@@ -38,6 +44,10 @@ struct Args {
     /// Directory containing all the consecutive .diff files
     #[arg(short, long)]
     diff_dir: PathBuf,
+
+    /// RocksDB folder for diff index
+    #[arg(short = 'i', long)]
+    diff_index: PathBuf,
 
     /// Path to the initial snapshot (tarball format)
     #[arg(short, long)]
@@ -74,28 +84,7 @@ fn main() -> anyhow::Result<()> {
     let diff_path = Path::new(&args.diff_dir);
 
     info!("Collecting diff files...");
-    let mut diff_list = Vec::new();
-    for x in walkdir::WalkDir::new(diff_path) {
-        let x = x?;
-        if x.path()
-            .extension()
-            .map(|x| x.to_ascii_lowercase())
-            .as_deref()
-            != Some(OsStr::new("diff"))
-        {
-            continue;
-        }
-        if x.path().is_file() {
-            let filename = x
-                .file_name()
-                .to_str()
-                .ok_or_else(|| anyhow!("Invalid filename"))?;
-            diff_list.push(
-                extract_datetime(filename).ok_or_else(|| anyhow!("Malformed diff filename"))?,
-            );
-        }
-    }
-    diff_list.sort();
+    let diff_list = collect_diff_files(&args.diff_dir)?;
     let last_diff_list = diff_list
         .last()
         .ok_or_else(|| anyhow::anyhow!("Empty diff list!"))?;
@@ -127,25 +116,9 @@ fn main() -> anyhow::Result<()> {
     info!("Indexing tarball...");
     let tar = ChunksTarReader::open_with_index(&args.base_snapshot)?;
 
-    info!("Collecting index...");
-    let progress = stylized_progress_bar(diff_list.len() as u64);
-    let map = diff_list
-        .iter()
-        .par_bridge()
-        .map(|x| {
-            let mut reader = diff2::DiffFile::open(
-                File::open_buffered(diff_path.join(format!("{x}.diff"))).unwrap(),
-            )
-            .unwrap();
-            let index = reader.read_index().unwrap();
-            progress.inc(1);
-            (extract_datetime(x).unwrap(), index)
-        })
-        .collect::<HashMap<_, _>>();
-    progress.finish();
-
-    let mut v = Vec::new();
-    stdin().read_to_end(&mut v)?;
+    info!("Opening index db...");
+    let options = Options::default();
+    let index_db = DB::open(&options, args.diff_index)?;
 
     info!("Retrieving...");
     let pb = stylized_progress_bar((apply_list.len() * chunks.len()) as u64);
@@ -174,14 +147,19 @@ fn main() -> anyhow::Result<()> {
                 fs::create_dir_all(&chunk_out)?;
 
                 let mut diff_data = vec![0_u8; CHUNK_LENGTH];
-                let entry = map[name].get(n);
-                let entry = match entry {
+
+                let mut key_buf = [0_u8; 100];
+                let entry_blob = index_db.get(make_key(name, *n, &mut key_buf))?;
+                let entry = match entry_blob {
                     None => {
                         // chunk had not been created in this snapshot
                         info!("Chunk not present in this snapshot '{}', skipping...", name);
                         return;
                     }
-                    Some(e) => e,
+                    Some(e) => {
+                        let e: (IndexEntry, usize) = bincode::decode_from_slice(&e, standard())?;
+                        e.0
+                    }
                 };
 
                 match entry.diff_data_range {

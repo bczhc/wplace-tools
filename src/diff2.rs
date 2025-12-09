@@ -16,6 +16,7 @@ use std::fs::File;
 use std::io;
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
+use bincode::{Decode, Encode};
 use yeet_ops::yeet;
 
 pub const MAGIC: [u8; 11] = *b"wplace-diff";
@@ -46,7 +47,7 @@ pub struct Metadata {}
 /// - if `diff_data_range` is [`DiffDataRange::Changed`]
 ///
 ///    [`ChunkFlag`] (u8) | n.x (u16) | n.y (u16) | checksum (u32) | `diff_data_range.pos` (u64) | `diff_data_range.len` (u64)
-#[derive(Debug)]
+#[derive(Debug, Encode, Decode)]
 pub struct IndexEntry {
     pub n: ChunkNumber,
     pub diff_data_range: DiffDataRange,
@@ -54,7 +55,7 @@ pub struct IndexEntry {
     pub checksum: u32,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Encode, Decode)]
 pub enum DiffDataRange {
     #[default]
     Unchanged,
@@ -119,17 +120,13 @@ impl<R: Read + Seek> DiffFile<R> {
     }
 
     pub fn read_index(&mut self) -> anyhow::Result<HashMap<ChunkNumber, IndexEntry>> {
-        Ok(self.read_index_seq()?.into_iter().collect())
-    }
-
-    pub fn read_index_seq(&mut self) -> anyhow::Result<Vec<(ChunkNumber, IndexEntry)>> {
-        let mut vec = Vec::new();
+        let mut map = HashMap::new();
         self.reader.seek(SeekFrom::Start(self.index_pos))?;
         for _ in 0..self.entry_count {
             let entry = IndexEntry::read_from(&mut self.reader)?;
-            vec.push((entry.n, entry));
+            map.insert(entry.n, entry);
         }
-        Ok(vec)
+        Ok(map)
     }
 }
 
@@ -215,7 +212,7 @@ impl<W: Write + Seek> DiffFileWriter<W> {
 }
 
 impl WriteTo for Metadata {
-    fn write_to(&self, mut w: impl Write) -> std::io::Result<()> {
+    fn write_to(&self, mut w: impl Write) -> io::Result<()> {
         let json = serde_json::to_string(self).unwrap();
         w.write_u32::<LE>(json.len().try_into().unwrap())?;
         w.write_all(json.as_bytes())?;
