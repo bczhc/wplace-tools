@@ -26,7 +26,8 @@ use wplace_tools::indexed_png::{read_png, read_png_reader};
 use wplace_tools::tar::ChunksTarReader;
 use wplace_tools::{
     apply_png, collect_chunks, diff2, new_chunk_file, open_file_range, set_up_logger,
-    stylized_progress_bar, ChunkProcessError, ExitOnError, CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK,
+    stylized_progress_bar, ChunkFetcher, ChunkProcessError, DirChunkFetcher, ExitOnError, TarChunkFetcher,
+    CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK,
 };
 
 mod cli {
@@ -339,10 +340,11 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn do_diff_for_directory(base: PathBuf, new: PathBuf, output: PathBuf) -> anyhow::Result<()> {
-    info!("Collecting files...");
-    let collected = collect_chunks(&new, None)?;
-
+fn do_diff(
+    base_fetcher: impl ChunkFetcher + Send + Sync + 'static,
+    new_fetcher: impl ChunkFetcher + Send + Sync + 'static,
+    output: PathBuf,
+) -> anyhow::Result<()> {
     info!("Creating diff file...");
     let mut output_dir = output
         .parent()
@@ -356,34 +358,34 @@ fn do_diff_for_directory(base: PathBuf, new: PathBuf, output: PathBuf) -> anyhow
     let mut diff_file = diff2::DiffFileWriter::create(output_file, Metadata::default())?;
 
     let (tx, rx) = sync_channel(1024);
-    info!("Processing {} files...", collected.len());
+    info!("Processing {} files...", new_fetcher.chunks_len());
 
-    let progress = stylized_progress_bar(collected.len() as u64);
+    let progress = stylized_progress_bar(new_fetcher.chunks_len() as u64);
     spawn(move || {
-        collected.into_par_iter().for_each_with(tx, |tx, (x, y)| {
-            let base_file = base.join(format!("{x}/{y}.png"));
-            let new_file = new.join(format!("{x}/{y}.png"));
+        let chunks_iter = new_fetcher.chunks_iter();
+        chunks_iter.par_bridge().for_each_with(tx, |tx, (x, y)| {
+            let result: anyhow::Result<()> = try {
+                let mut base_buf = vec![0_u8; CHUNK_LENGTH];
+                let mut new_buf = vec![0_u8; CHUNK_LENGTH];
 
-            let mut base_buf = vec![0_u8; CHUNK_LENGTH];
-            let mut new_buf = vec![0_u8; CHUNK_LENGTH];
+                let present = new_fetcher.fetch((x, y), &mut new_buf)?;
+                assert!(present);
+                let base_chunk_present = base_fetcher.fetch((x, y), &mut base_buf)?;
 
-            if base_file.exists() {
-                read_png(&base_file, &mut base_buf).unwrap();
-            }
-            read_png(&new_file, &mut new_buf).unwrap();
+                let checksum = chunk_checksum(&new_buf);
 
-            let checksum = chunk_checksum(&new_buf);
-
-            // It's expecting that a large percent of the chunks are not mutated.
-            // Thus in this case, only computing diff for changed chunks can reduce the process time.
-            let compressed_diff = if !base_file.exists() || base_buf != new_buf {
-                let compressed_diff = diff_png_compressed(&mut base_buf, &new_buf).unwrap();
-                Some(compressed_diff)
-            } else {
-                None
+                // It's expecting that a large percent of the chunks are not mutated.
+                // Thus in this case, only computing diff for changed chunks can reduce the process time.
+                let compressed_diff = if !base_chunk_present || base_buf != new_buf {
+                    let compressed_diff = diff_png_compressed(&mut base_buf, &new_buf).unwrap();
+                    Some(compressed_diff)
+                } else {
+                    None
+                };
+                tx.send((x, y, compressed_diff, checksum)).unwrap();
+                progress.inc(1);
             };
-            tx.send((x, y, compressed_diff, checksum)).unwrap();
-            progress.inc(1);
+            result.exit_on_error();
         });
         progress.finish();
     });
@@ -396,64 +398,22 @@ fn do_diff_for_directory(base: PathBuf, new: PathBuf, output: PathBuf) -> anyhow
     Ok(())
 }
 
+fn do_diff_for_directory(base: PathBuf, new: PathBuf, output: PathBuf) -> anyhow::Result<()> {
+    info!("Collecting files...");
+    let new_fetcher = DirChunkFetcher::new(&new, true)?;
+    let base_fetcher = DirChunkFetcher::new(&base, false)?;
+
+    do_diff(base_fetcher, new_fetcher, output)?;
+    Ok(())
+}
+
 fn do_diff_for_tar(base: PathBuf, new: PathBuf, output: PathBuf) -> anyhow::Result<()> {
     info!("Indexing 'base' tarball...");
-    let base_tar = ChunksTarReader::open_with_index(&base)?;
+    let base_tar = TarChunkFetcher::new(&base)?;
     info!("Indexing 'new' tarball...");
-    let new_tar = ChunksTarReader::open_with_index(&new)?;
+    let new_tar = TarChunkFetcher::new(&new)?;
 
-    info!("Creating diff file...");
-    let mut output_dir = output
-        .parent()
-        .expect("Can not get parent of the output file");
-    if output_dir == Path::new("") {
-        output_dir = Path::new(".");
-    }
-    let temp_file = NamedTempFile::new_in(output_dir)?;
-    debug!("temp_file: {}", temp_file.as_ref().display());
-    let output_file = File::create_buffered(temp_file.as_ref())?;
-    let mut diff_file = diff2::DiffFileWriter::create(output_file, Metadata::default())?;
-
-    let (tx, rx) = sync_channel(1024);
-    info!("Processing {} files...", new_tar.map.len());
-
-    let progress = stylized_progress_bar(new_tar.map.len() as u64);
-    spawn(move || {
-        new_tar
-            .map
-            .keys()
-            .par_bridge()
-            .for_each_with(tx, |tx, &(x, y)| {
-                let mut base_buf = vec![0_u8; CHUNK_LENGTH];
-                let mut new_buf = vec![0_u8; CHUNK_LENGTH];
-
-                let base_chunk_reader = base_tar.open_chunk((x, y));
-                let base_chunk_present = base_chunk_reader.is_some();
-                if let Some(r) = base_chunk_reader {
-                    read_png_reader(r.unwrap(), &mut base_buf).unwrap();
-                }
-                let new_chunk_reader = new_tar.open_chunk((x, y)).unwrap().unwrap();
-                read_png_reader(new_chunk_reader, &mut new_buf).unwrap();
-
-                let checksum = chunk_checksum(&new_buf);
-
-                let compressed_diff = if !base_chunk_present || base_buf != new_buf {
-                    let compressed_diff = diff_png_compressed(&mut base_buf, &new_buf).unwrap();
-                    Some(compressed_diff)
-                } else {
-                    None
-                };
-                tx.send((x, y, compressed_diff, checksum)).unwrap();
-                progress.inc(1);
-            });
-        progress.finish();
-    });
-
-    for (x, y, diff_data, checksum) in rx {
-        diff_file.add_entry((x, y), diff_data.as_deref(), checksum)?;
-    }
-    diff_file.finalize()?;
-    temp_file.persist(output)?;
+    do_diff(base_tar, new_tar, output)?;
     Ok(())
 }
 

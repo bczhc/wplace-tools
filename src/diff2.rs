@@ -8,12 +8,14 @@
 //! Magic (\[u8; 11\]) | IndexPos (u64) | EntryCount (u32) | [`Metadata`] | diff data... (\[u8\]) | [`IndexEntry`]...
 
 use crate::ChunkNumber;
-use byteorder::{LE, ReadBytesExt, WriteBytesExt};
+use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 use num_enum::TryFromPrimitive;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs::File;
 use std::io;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::path::Path;
 use yeet_ops::yeet;
 
 pub const MAGIC: [u8; 11] = *b"wplace-diff";
@@ -84,11 +86,17 @@ enum ChunkFlag {
     Changed = 0b01,
 }
 
-pub struct DiffFile<R: Read + Seek> {
+pub struct DiffFile<R> {
     reader: R,
     pub index_pos: u64,
     pub entry_count: u32,
     pub metadata: Metadata,
+}
+
+impl DiffFile<()> {
+    pub fn open_path(path: impl AsRef<Path>) -> anyhow::Result<DiffFile<BufReader<File>>> {
+        DiffFile::open(File::open_buffered(path)?)
+    }
 }
 
 impl<R: Read + Seek> DiffFile<R> {
@@ -111,13 +119,17 @@ impl<R: Read + Seek> DiffFile<R> {
     }
 
     pub fn read_index(&mut self) -> anyhow::Result<HashMap<ChunkNumber, IndexEntry>> {
-        let mut map = HashMap::new();
+        Ok(self.read_index_seq()?.into_iter().collect())
+    }
+
+    pub fn read_index_seq(&mut self) -> anyhow::Result<Vec<(ChunkNumber, IndexEntry)>> {
+        let mut vec = Vec::new();
         self.reader.seek(SeekFrom::Start(self.index_pos))?;
         for _ in 0..self.entry_count {
             let entry = IndexEntry::read_from(&mut self.reader)?;
-            map.insert(entry.n, entry);
+            vec.push((entry.n, entry));
         }
-        Ok(map)
+        Ok(vec)
     }
 }
 
