@@ -25,8 +25,8 @@ use wplace_tools::diff2::{DiffDataRange, Metadata};
 use wplace_tools::indexed_png::{read_png, read_png_reader};
 use wplace_tools::tar::ChunksTarReader;
 use wplace_tools::{
-    apply_png, collect_chunks, diff2, new_chunk_file, open_file_range, set_up_logger, stylized_progress_bar,
-    ExitOnError, CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK,
+    apply_png, collect_chunks, diff2, new_chunk_file, open_file_range, set_up_logger,
+    stylized_progress_bar, ChunkProcessError, ExitOnError, CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK,
 };
 
 mod cli {
@@ -211,10 +211,13 @@ fn main() -> anyhow::Result<()> {
                         }
                     }
                 };
-                if let Err(e) = result {
-                    error!("Fatal error on applying diff: {e}");
-                    exit(1);
-                }
+                result
+                    .map_err(|e| ChunkProcessError {
+                        inner: e,
+                        chunk_number: *x.0,
+                        diff_file: None,
+                    })
+                    .exit_on_error();
             });
             progress.finish();
 

@@ -19,7 +19,11 @@ use threadpool::ThreadPool;
 use wplace_tools::diff2::DiffDataRange;
 use wplace_tools::indexed_png::{read_png, read_png_reader, write_chunk_png, write_png};
 use wplace_tools::tar::ChunksTarReader;
-use wplace_tools::{apply_chunk, diff2, extract_datetime, flate2_decompress, open_file_range, quick_capture, set_up_logger, stylized_progress_bar, validate_chunk_checksum, Canvas, ChunkNumber, ExitOnError, CHUNK_DIMENSION, CHUNK_LENGTH, CHUNK_WIDTH};
+use wplace_tools::{
+    apply_chunk, diff2, extract_datetime, flate2_decompress, open_file_range, quick_capture,
+    set_up_logger, stylized_progress_bar, validate_chunk_checksum, Canvas, ChunkNumber, ChunkProcessError,
+    ExitOnError, CHUNK_DIMENSION, CHUNK_LENGTH, CHUNK_WIDTH,
+};
 use yeet_ops::yeet;
 
 #[derive(clap::Parser)]
@@ -190,7 +194,13 @@ fn main() -> anyhow::Result<()> {
                     image_saver.submit(img_path, CHUNK_DIMENSION, chunk_buf.clone());
                 }
             };
-            result.exit_on_error();
+            result
+                .map_err(|e| ChunkProcessError {
+                    inner: e,
+                    chunk_number: *n,
+                    diff_file: Some(name.into()),
+                })
+                .exit_on_error();
         });
         // save the stitched image
         if let Some(mut c) = stitch_canvas {

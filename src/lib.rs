@@ -19,12 +19,12 @@ use log::error;
 use pathdiff::diff_paths;
 use regex::Regex;
 use std::env::set_var;
-use std::fmt::Display;
+use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom, Take};
 use std::path::{Path, PathBuf};
 use std::process::exit;
-use std::{env, fs, hint, io};
+use std::{env, fmt, fs, hint, io};
 use walkdir::WalkDir;
 use yeet_ops::yeet;
 
@@ -222,9 +222,7 @@ pub fn apply_png(
 
     apply_chunk(&mut base_buf, diff_data);
 
-    if chunk_checksum(&base_buf) != checksum {
-        yeet!(anyhow::anyhow!("Checksum not matched!"));
-    }
+    validate_chunk_checksum(&base_buf, checksum)?;
 
     write_chunk_png(output, &base_buf)?;
 
@@ -356,6 +354,26 @@ impl Canvas {
             (self.dimension.0 as u32, self.dimension.1 as u32),
             &self.buf,
         )?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct ChunkProcessError {
+    pub inner: anyhow::Error,
+    pub chunk_number: ChunkNumber,
+    pub diff_file: Option<String>,
+}
+
+impl Display for ChunkProcessError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        self.inner.fmt(f)?;
+        use fmt::Write;
+        writeln!(f)?;
+        writeln!(f, "Chunk number: {:?}", self.chunk_number)?;
+        if let Some(s) = &self.diff_file {
+            writeln!(f, "Diff file: {s}")?;
+        }
         Ok(())
     }
 }
