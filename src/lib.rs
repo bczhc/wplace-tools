@@ -209,28 +209,6 @@ pub fn extract_datetime(s: &str) -> Option<String> {
 }
 
 #[inline(always)]
-pub fn apply_png(
-    base: impl AsRef<Path>,
-    output: impl AsRef<Path>,
-    diff_data: &[u8; CHUNK_LENGTH],
-    checksum: u32,
-) -> anyhow::Result<()> {
-    let mut base_buf = vec![0_u8; CHUNK_LENGTH];
-
-    if base.as_ref().exists() {
-        read_png(base, &mut base_buf)?;
-    }
-
-    apply_chunk(&mut base_buf, diff_data);
-
-    validate_chunk_checksum(&base_buf, checksum)?;
-
-    write_chunk_png(output, &base_buf)?;
-
-    Ok(())
-}
-
-#[inline(always)]
 pub fn apply_chunk(base: &mut [u8], diff_data: &[u8; CHUNK_LENGTH]) {
     for (base_pix, diff_pix) in base.iter_mut().zip(diff_data) {
         if hint::unlikely(diff_pix & MUTATION_MASK == MUTATION_MASK) {
@@ -384,6 +362,8 @@ pub trait ChunkFetcher {
     fn chunks_len(&self) -> usize;
 
     fn fetch(&self, n: ChunkNumber, buf: &mut [u8]) -> anyhow::Result<bool>;
+    
+    fn fetch_raw(&self, n: ChunkNumber) -> anyhow::Result<Vec<u8>>;
 }
 
 pub struct DirChunkFetcher {
@@ -429,6 +409,15 @@ impl ChunkFetcher for DirChunkFetcher {
         read_png(&file, buf)?;
         Ok(true)
     }
+
+    fn fetch_raw(&self, (x,y): ChunkNumber) -> anyhow::Result<Vec<u8>> {
+        let file = self.root.join(format!("{x}/{y}.png"));
+        let mut vec = Vec::new();
+        if file.exists() {
+            File::open_buffered(&file)?.read_to_end(&mut vec)?;
+        }
+        Ok(vec)
+    }
 }
 
 pub struct TarChunkFetcher {
@@ -459,5 +448,14 @@ impl ChunkFetcher for TarChunkFetcher {
         };
         read_png_reader(c?, buf)?;
         Ok(true)
+    }
+
+    fn fetch_raw(&self, n: ChunkNumber) -> anyhow::Result<Vec<u8>> {
+        let Some(c) = self.reader.open_chunk(n) else {
+            return Ok(vec![]);
+        };
+        let mut vec = Vec::new();
+        io::copy(&mut c?, &mut vec)?;
+        Ok(vec)
     }
 }

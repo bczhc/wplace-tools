@@ -11,7 +11,7 @@ use flate2::{write, Compression};
 use log::{debug, error, info};
 use rayon::prelude::*;
 use std::cell::RefCell;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::{read, File};
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
@@ -22,13 +22,14 @@ use std::{fs, hint, io};
 use tempfile::NamedTempFile;
 use wplace_tools::checksum::chunk_checksum;
 use wplace_tools::diff2::{DiffDataRange, Metadata};
-use wplace_tools::indexed_png::{read_png, read_png_reader};
+use wplace_tools::indexed_png::{read_png, read_png_reader, write_chunk_png};
 use wplace_tools::tar::ChunksTarReader;
 use wplace_tools::{
-    apply_png, collect_chunks, diff2, new_chunk_file, open_file_range, set_up_logger,
-    stylized_progress_bar, ChunkFetcher, ChunkProcessError, DirChunkFetcher, ExitOnError, TarChunkFetcher,
-    CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK,
+    apply_chunk, collect_chunks, diff2, new_chunk_file, open_file_range, set_up_logger,
+    stylized_progress_bar, validate_chunk_checksum, ChunkFetcher, ChunkProcessError, DirChunkFetcher, ExitOnError,
+    TarChunkFetcher, CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK,
 };
+use yeet_ops::yeet;
 
 mod cli {
     use clap::{Args, Parser, Subcommand, ValueHint};
@@ -179,6 +180,16 @@ fn main() -> anyhow::Result<()> {
                 .filter(|x| !x.1.diff_data_range.is_changed())
                 .collect::<Vec<_>>();
 
+            let base_fetcher: Box<dyn ChunkFetcher + Send + Sync + 'static> =
+                if base.extension().map(|x| x.to_ascii_lowercase()) == Some("tar".into()) {
+                    info!("Reading base tarball...");
+                    Box::new(TarChunkFetcher::new(&base)?)
+                } else if base.is_dir() {
+                    Box::new(DirChunkFetcher::new(&base, false)?)
+                } else {
+                    yeet!(anyhow::anyhow!("Unknown 'base' file type"))
+                };
+
             info!("Applying diff to {} chunks...", changed_chunks.len());
             let progress = stylized_progress_bar(changed_chunks.len() as u64);
 
@@ -195,15 +206,20 @@ fn main() -> anyhow::Result<()> {
                             let mut raw_diff = vec![0_u8; CHUNK_LENGTH];
                             decompressor.read_exact(&mut raw_diff)?;
 
-                            let base_file = base.join(format!("{chunk_x}/{chunk_y}.png"));
                             let output_file = new_chunk_file(&output, (chunk_x, chunk_y), "png");
-                            apply_png(
-                                base_file,
-                                output_file,
+
+                            let mut base_buf = vec![0_u8; CHUNK_LENGTH];
+                            // if the base chunk is not present, the buffer will be just zeros
+                            // - totally fine for the applying process.
+                            let _p = base_fetcher.fetch((chunk_x, chunk_y), &mut base_buf);
+
+                            apply_chunk(
+                                &mut base_buf,
                                 <&[_; _]>::try_from(&raw_diff[..])
                                     .expect("Raw diff data length is expected to be 1_000_000"),
-                                entry.checksum,
-                            )?;
+                            );
+                            validate_chunk_checksum(&base_buf, entry.checksum)?;
+                            write_chunk_png(&output_file, &base_buf)?;
                             progress.inc(1);
                         }
                         DiffDataRange::Unchanged => {
@@ -226,25 +242,19 @@ fn main() -> anyhow::Result<()> {
             let progress = stylized_progress_bar(unchanged_chunks.len() as u64);
 
             unchanged_chunks.into_iter().par_bridge().for_each(|x| {
-                let entry = x.1;
-                let chunk_x = x.0.0;
-                let chunk_y = x.0.1;
+                let result: anyhow::Result<()> = try {
+                    let entry = x.1;
+                    let chunk_x = x.0.0;
+                    let chunk_y = x.0.1;
 
-                match entry.diff_data_range {
-                    DiffDataRange::Unchanged => {
-                        if let Err(e) = fs::copy(
-                            base.join(format!("{chunk_x}/{chunk_y}.png")),
-                            new_chunk_file(&output, (chunk_x, chunk_y), "png"),
-                        ) {
-                            error!("Failed to copy: {}; abort", e);
-                            exit(1);
-                        };
-                        progress.inc(1);
-                    }
-                    DiffDataRange::Changed { .. } => {
-                        unreachable!()
-                    }
-                }
+                    assert!(matches!(entry.diff_data_range, DiffDataRange::Unchanged));
+                    let base_png_buf = base_fetcher.fetch_raw((chunk_x, chunk_y))?;
+                    assert!(!base_png_buf.is_empty());
+                    let out_chunk_file = new_chunk_file(&output, (chunk_x, chunk_y), "png");
+                    File::create_buffered(out_chunk_file)?.write_all(&base_png_buf)?;
+                    progress.inc(1);
+                };
+                result.exit_on_error();
             });
             progress.finish();
         }
