@@ -10,8 +10,10 @@ use lazy_regex::regex;
 use log::{debug, info};
 use rayon::prelude::*;
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs;
 use std::fs::File;
+use std::io::{stdin, Read};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use threadpool::ThreadPool;
@@ -19,9 +21,9 @@ use wplace_tools::diff2::DiffDataRange;
 use wplace_tools::indexed_png::{read_png_reader, write_chunk_png, write_png};
 use wplace_tools::tar::ChunksTarReader;
 use wplace_tools::{
-    CHUNK_DIMENSION, CHUNK_LENGTH, Canvas, ChunkNumber, ChunkProcessError, ExitOnError,
     apply_chunk, diff2, extract_datetime, flate2_decompress, open_file_range, quick_capture,
-    set_up_logger, stylized_progress_bar, validate_chunk_checksum,
+    set_up_logger, stylized_progress_bar, validate_chunk_checksum, Canvas, ChunkNumber, ChunkProcessError,
+    ExitOnError, CHUNK_DIMENSION, CHUNK_LENGTH,
 };
 use yeet_ops::yeet;
 
@@ -75,6 +77,14 @@ fn main() -> anyhow::Result<()> {
     let mut diff_list = Vec::new();
     for x in walkdir::WalkDir::new(diff_path) {
         let x = x?;
+        if x.path()
+            .extension()
+            .map(|x| x.to_ascii_lowercase())
+            .as_deref()
+            != Some(OsStr::new("diff"))
+        {
+            continue;
+        }
         if x.path().is_file() {
             let filename = x
                 .file_name()
@@ -133,6 +143,9 @@ fn main() -> anyhow::Result<()> {
         })
         .collect::<HashMap<_, _>>();
     progress.finish();
+
+    let mut v = Vec::new();
+    stdin().read_to_end(&mut v)?;
 
     info!("Retrieving...");
     let pb = stylized_progress_bar((apply_list.len() * chunks.len()) as u64);
