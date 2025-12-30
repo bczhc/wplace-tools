@@ -7,7 +7,7 @@
 
 use crate::cli::Commands;
 use clap::Parser;
-use flate2::{write, Compression};
+use flate2::{Compression, write};
 use log::{debug, info};
 use rayon::prelude::*;
 use std::cell::RefCell;
@@ -22,9 +22,9 @@ use tempfile::NamedTempFile;
 use wplace_tools::checksum::chunk_checksum;
 use wplace_tools::indexed_png::{read_png, write_chunk_png};
 use wplace_tools::{
-    apply_chunk, collect_chunks, diff3, new_chunk_file, open_file_range, set_up_logger,
-    stylized_progress_bar, validate_chunk_checksum, ChunkFetcher, ChunkProcessError, DirChunkFetcher, ExitOnError,
-    TarChunkFetcher, CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK,
+    CHUNK_LENGTH, ChunkFetcher, ChunkProcessError, DirChunkFetcher, ExitOnError, MUTATION_MASK,
+    PALETTE_INDEX_MASK, TarChunkFetcher, apply_chunk, collect_chunks, diff3, new_chunk_file,
+    open_file_range, set_up_logger, stylized_progress_bar, validate_chunk_checksum,
 };
 use yeet_ops::yeet;
 

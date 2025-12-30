@@ -5,10 +5,10 @@
 //! ## Format
 //! Magic (11B) | Version (u16) | IndexPos (u64) | EntryCount (u32) | Metadata | Diff Data | Sorted Index Entries...
 
-use std::collections::HashMap;
 use crate::ChunkNumber;
-use byteorder::{ReadBytesExt, WriteBytesExt, LE};
+use byteorder::{LE, ReadBytesExt, WriteBytesExt};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -34,7 +34,7 @@ pub struct IndexEntry {
 
 impl IndexEntry {
     /// Determine if chunk is changed by checking data range
-    pub fn is_changed(&self) -> bool {
+    pub const fn is_changed(&self) -> bool {
         self.pos != 0 || self.len != 0
     }
 }
@@ -94,7 +94,8 @@ impl<R: Read + Seek> DiffFile<R> {
 
         while low <= high {
             let mid = (low + high) / 2;
-            self.reader.seek(SeekFrom::Start(self.index_pos + mid * INDEX_ENTRY_SIZE))?;
+            self.reader
+                .seek(SeekFrom::Start(self.index_pos + mid * INDEX_ENTRY_SIZE))?;
 
             let entry = self.read_entry_at_current()?;
             let current_coord = (entry.x, entry.y);
@@ -117,7 +118,13 @@ impl<R: Read + Seek> DiffFile<R> {
         let pos = self.reader.read_u64::<LE>()?;
         let len = self.reader.read_u64::<LE>()?;
 
-        Ok(IndexEntry { x, y, checksum, pos, len })
+        Ok(IndexEntry {
+            x,
+            y,
+            checksum,
+            pos,
+            len,
+        })
     }
 
     /// Collects all index entries from the diff3 file into a HashMap.
@@ -135,7 +142,13 @@ impl<R: Read + Seek> DiffFile<R> {
             let len = self.reader.read_u64::<LE>()?;
 
             let n: ChunkNumber = (x, y);
-            let entry = IndexEntry { x, y, checksum, pos, len };
+            let entry = IndexEntry {
+                x,
+                y,
+                checksum,
+                pos,
+                len,
+            };
 
             map.insert(n, entry);
         }

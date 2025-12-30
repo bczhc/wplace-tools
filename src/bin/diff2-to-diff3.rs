@@ -1,14 +1,18 @@
 use clap::Parser;
+use log::info;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::PathBuf;
-use wplace_tools::{diff2, open_file_range, set_up_logger, diff3};
-use log::info;
+use wplace_tools::{diff2, diff3, open_file_range, set_up_logger};
 
 // 引入之前定义的 diff3 模块
 
 #[derive(Parser, Debug)]
-#[command(name = "diff2-to-diff3", version = "1.0", about = "Convert wplace diff2 format to diff3")]
+#[command(
+    name = "diff2-to-diff3",
+    version = "1.0",
+    about = "Convert wplace diff2 format to diff3"
+)]
 struct Args {
     /// Path to the source diff2 file
     #[arg(index = 1)]

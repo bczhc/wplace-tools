@@ -7,10 +7,10 @@
 
 pub mod checksum;
 pub mod diff2;
+pub mod diff3;
 pub mod indexed_png;
 pub mod tar;
 pub mod zip;
-pub mod diff3;
 
 use crate::checksum::chunk_checksum;
 use crate::indexed_png::{read_png, read_png_reader, write_png};
@@ -456,16 +456,16 @@ impl ChunkFetcher for TarChunkFetcher {
 }
 
 pub mod diff_index {
-    use std::ffi::OsStr;
-    use std::path::Path;
+    use crate::{ChunkNumber, extract_datetime};
     use anyhow::anyhow;
     use byteorder::LE;
-    use crate::{extract_datetime, ChunkNumber};
+    use std::ffi::OsStr;
+    use std::path::Path;
 
     #[inline(always)]
     pub fn make_key<'a>(diff_name: &str, chunk: ChunkNumber, key_buf: &'a mut [u8]) -> &'a [u8] {
         let buf = key_buf;
-        let diff_name_len = diff_name.as_bytes().len();
+        let diff_name_len = diff_name.len();
         assert!(buf.len() >= diff_name_len + 4);
         buf[..diff_name_len].copy_from_slice(diff_name.as_bytes());
         use byteorder::ByteOrder;
@@ -473,7 +473,7 @@ pub mod diff_index {
         LE::write_u16(&mut buf[(diff_name_len + 2)..], chunk.1);
         &buf[..(diff_name_len + 4)]
     }
-    
+
     pub fn collect_diff_files(root: impl AsRef<Path>) -> anyhow::Result<Vec<String>> {
         let mut diff_list = Vec::new();
         for x in walkdir::WalkDir::new(root) {

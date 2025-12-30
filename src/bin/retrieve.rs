@@ -6,28 +6,21 @@
 #![warn(clippy::all, clippy::nursery)]
 
 use anyhow::anyhow;
-use byteorder::{LittleEndian, WriteBytesExt, LE};
 use clap::Parser;
 use lazy_regex::regex;
 use log::{debug, info, warn};
 use rayon::prelude::*;
-use std::collections::{HashMap, HashSet};
-use std::ffi::OsStr;
-use std::fs::File;
-use std::io::{stdin, Cursor, Read, Write};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::sync_channel;
-use std::thread::spawn;
 use std::{fs, hint};
 use threadpool::ThreadPool;
-use wplace_tools::diff_index::{collect_diff_files, make_key};
+use wplace_tools::diff_index::collect_diff_files;
 use wplace_tools::indexed_png::{read_png_reader, write_chunk_png, write_png};
 use wplace_tools::tar::ChunksTarReader;
 use wplace_tools::{
+    CHUNK_DIMENSION, CHUNK_LENGTH, Canvas, ChunkNumber, ChunkProcessError, ExitOnError,
     apply_chunk, diff3, extract_datetime, flate2_decompress, open_file_range, quick_capture,
-    set_up_logger, stylized_progress_bar, validate_chunk_checksum, Canvas, ChunkNumber, ChunkProcessError,
-    ExitOnError, CHUNK_DIMENSION, CHUNK_LENGTH,
+    set_up_logger, stylized_progress_bar, validate_chunk_checksum,
 };
 use yeet_ops::yeet;
 
