@@ -5,6 +5,7 @@
 //! ## Format
 //! Magic (11B) | Version (u16) | IndexPos (u64) | EntryCount (u32) | Metadata | Diff Data | Sorted Index Entries...
 
+use std::collections::HashMap;
 use crate::ChunkNumber;
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 use serde::{Deserialize, Serialize};
@@ -117,6 +118,29 @@ impl<R: Read + Seek> DiffFile<R> {
         let len = self.reader.read_u64::<LE>()?;
 
         Ok(IndexEntry { x, y, checksum, pos, len })
+    }
+
+    /// Collects all index entries from the diff3 file into a HashMap.
+    /// Key: ChunkNumber (x, y), Value: IndexEntry
+    pub fn collect_index(&mut self) -> anyhow::Result<HashMap<ChunkNumber, IndexEntry>> {
+        let mut map = HashMap::with_capacity(self.entry_count as usize);
+
+        self.reader.seek(SeekFrom::Start(self.index_pos))?;
+
+        for _ in 0..self.entry_count {
+            let x = self.reader.read_u16::<LE>()?;
+            let y = self.reader.read_u16::<LE>()?;
+            let checksum = self.reader.read_u32::<LE>()?;
+            let pos = self.reader.read_u64::<LE>()?;
+            let len = self.reader.read_u64::<LE>()?;
+
+            let n: ChunkNumber = (x, y);
+            let entry = IndexEntry { x, y, checksum, pos, len };
+
+            map.insert(n, entry);
+        }
+
+        Ok(map)
     }
 }
 

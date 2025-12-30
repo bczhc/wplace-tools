@@ -7,7 +7,7 @@
 
 use crate::cli::Commands;
 use clap::Parser;
-use flate2::{Compression, write};
+use flate2::{write, Compression};
 use log::{debug, info};
 use rayon::prelude::*;
 use std::cell::RefCell;
@@ -20,12 +20,11 @@ use std::thread::spawn;
 use std::{fs, hint, io};
 use tempfile::NamedTempFile;
 use wplace_tools::checksum::chunk_checksum;
-use wplace_tools::diff2::{DiffDataRange, Metadata};
 use wplace_tools::indexed_png::{read_png, write_chunk_png};
 use wplace_tools::{
-    CHUNK_LENGTH, ChunkFetcher, ChunkProcessError, DirChunkFetcher, ExitOnError, MUTATION_MASK,
-    PALETTE_INDEX_MASK, TarChunkFetcher, apply_chunk, collect_chunks, diff2, new_chunk_file,
-    open_file_range, set_up_logger, stylized_progress_bar, validate_chunk_checksum,
+    apply_chunk, collect_chunks, diff3, new_chunk_file, open_file_range, set_up_logger,
+    stylized_progress_bar, validate_chunk_checksum, ChunkFetcher, ChunkProcessError, DirChunkFetcher, ExitOnError,
+    TarChunkFetcher, CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK,
 };
 use yeet_ops::yeet;
 
@@ -166,16 +165,16 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Apply { base, diff, output } => {
             info!("Opening diff file...");
-            let mut diff_file = diff2::DiffFile::open(File::open_buffered(&diff)?)?;
-            let index = diff_file.read_index()?;
+            let mut diff_file = diff3::DiffFile::open(File::open_buffered(&diff)?)?;
+            let index = diff_file.collect_index()?;
             // process them separately (with two separate progress bar)
             let changed_chunks = index
                 .iter()
-                .filter(|x| x.1.diff_data_range.is_changed())
+                .filter(|x| x.1.is_changed())
                 .collect::<Vec<_>>();
             let unchanged_chunks = index
                 .iter()
-                .filter(|x| !x.1.diff_data_range.is_changed())
+                .filter(|x| !x.1.is_changed())
                 .collect::<Vec<_>>();
 
             let base_fetcher: Box<dyn ChunkFetcher + Send + Sync + 'static> =
@@ -197,9 +196,9 @@ fn main() -> anyhow::Result<()> {
                     let chunk_y = x.0.1;
                     let entry = x.1;
 
-                    match entry.diff_data_range {
-                        DiffDataRange::Changed { pos, len } => {
-                            let diff_reader = open_file_range(&diff, pos, len)?;
+                    match entry.is_changed() {
+                        true => {
+                            let diff_reader = open_file_range(&diff, entry.pos, entry.len)?;
                             let mut decompressor = flate2::read::DeflateDecoder::new(diff_reader);
                             let mut raw_diff = vec![0_u8; CHUNK_LENGTH];
                             decompressor.read_exact(&mut raw_diff)?;
@@ -220,7 +219,7 @@ fn main() -> anyhow::Result<()> {
                             write_chunk_png(&output_file, &base_buf)?;
                             progress.inc(1);
                         }
-                        DiffDataRange::Unchanged => {
+                        false => {
                             // changed_chunks is filtered
                             unreachable!()
                         }
@@ -245,7 +244,7 @@ fn main() -> anyhow::Result<()> {
                     let chunk_x = x.0.0;
                     let chunk_y = x.0.1;
 
-                    assert!(matches!(entry.diff_data_range, DiffDataRange::Unchanged));
+                    assert!(!entry.is_changed());
                     let base_png_buf = base_fetcher.fetch_raw((chunk_x, chunk_y))?;
                     assert!(!base_png_buf.is_empty());
                     let out_chunk_file = new_chunk_file(&output, (chunk_x, chunk_y), "png");
@@ -305,33 +304,30 @@ fn main() -> anyhow::Result<()> {
         }
 
         Commands::Show { diff } => {
-            let mut reader = diff2::DiffFile::open(File::open_buffered(&diff)?)?;
+            let mut reader = diff3::DiffFile::open(File::open_buffered(&diff)?)?;
             println!(
                 "Metadata: {}",
                 serde_json::to_string(&reader.metadata).unwrap()
             );
-            let index = reader.read_index()?;
+            let index = reader.collect_index()?;
             println!("Total chunks: {}", index.len());
             println!(
                 "Changed chunks: {}",
-                index
-                    .iter()
-                    .filter(|x| x.1.diff_data_range.is_changed())
-                    .count()
+                index.iter().filter(|x| x.1.is_changed()).count()
             );
         }
 
         Commands::Test { diff } => {
-            let mut reader = diff2::DiffFile::open(File::open_buffered(&diff)?)?;
-            let index = reader.read_index()?;
+            let mut reader = diff3::DiffFile::open(File::open_buffered(&diff)?)?;
+            let index = reader.collect_index()?;
             assert_eq!(reader.entry_count as usize, index.len());
             let pb = stylized_progress_bar(index.len() as u64);
             index.into_par_iter().for_each(|(_n, e)| {
                 let result: anyhow::Result<()> = try {
-                    match e.diff_data_range {
-                        DiffDataRange::Unchanged => {}
-                        DiffDataRange::Changed { pos, len } => {
-                            let portion = open_file_range(&diff, pos, len)?;
+                    match e.is_changed() {
+                        false => {}
+                        true => {
+                            let portion = open_file_range(&diff, e.pos, e.len)?;
                             let mut decoder = flate2::read::DeflateDecoder::new(portion);
                             io::copy(&mut decoder, &mut io::sink())?;
                         }
@@ -363,7 +359,7 @@ fn do_diff(
     let temp_file = NamedTempFile::new_in(output_dir)?;
     debug!("temp_file: {}", temp_file.as_ref().display());
     let output_file = File::create_buffered(temp_file.as_ref())?;
-    let mut diff_file = diff2::DiffFileWriter::create(output_file, Metadata::default())?;
+    let mut diff_file = diff3::DiffFileWriter::create(output_file, diff3::Metadata::default())?;
 
     let (tx, rx) = sync_channel(1024);
     info!("Processing {} files...", new_fetcher.chunks_len());

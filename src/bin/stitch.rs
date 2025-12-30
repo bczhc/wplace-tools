@@ -9,6 +9,9 @@ use wplace_tools::{CHUNK_LENGTH, Canvas, ChunkNumber, stylized_progress_bar};
 
 #[derive(clap::Parser)]
 struct Args {
+    /// Directory containing PNG files to be stitched.
+    ///
+    /// Filename format: {x}-{y}.png
     dir: PathBuf,
 }
 
@@ -17,17 +20,13 @@ fn main() -> anyhow::Result<()> {
     let out_dir = args.dir.join("stitched");
     fs::create_dir_all(&out_dir)?;
 
-    // 存放所有文件名的 HashSet（自动去重）
     let mut filenames = HashSet::new();
 
-    // 遍历 dir 下的所有条目
     for entry in fs::read_dir(&args.dir)? {
         let entry = entry?;
         let path = entry.path();
 
-        // 只处理子目录
         if path.is_dir() {
-            // 遍历子目录内文件
             for file_entry in fs::read_dir(path)? {
                 let file_entry = file_entry?;
                 let file_path = file_entry.path();
