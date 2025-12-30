@@ -161,7 +161,6 @@ fn main() -> anyhow::Result<()> {
 
                 let img_path = chunk_out.join(format!("{name}.png"));
                 if args.all || is_last_snapshot {
-                    write_chunk_png(&img_path, chunk_buf)?;
                     image_saver.submit(img_path, CHUNK_DIMENSION, chunk_buf.clone());
                 }
             };
