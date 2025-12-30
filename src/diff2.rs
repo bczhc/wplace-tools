@@ -16,7 +16,6 @@ use std::fs::File;
 use std::io;
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
-use bincode::{Decode, Encode};
 use yeet_ops::yeet;
 
 pub const MAGIC: [u8; 11] = *b"wplace-diff";
@@ -47,7 +46,7 @@ pub struct Metadata {}
 /// - if `diff_data_range` is [`DiffDataRange::Changed`]
 ///
 ///    [`ChunkFlag`] (u8) | n.x (u16) | n.y (u16) | checksum (u32) | `diff_data_range.pos` (u64) | `diff_data_range.len` (u64)
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug)]
 pub struct IndexEntry {
     pub n: ChunkNumber,
     pub diff_data_range: DiffDataRange,
@@ -55,7 +54,7 @@ pub struct IndexEntry {
     pub checksum: u32,
 }
 
-#[derive(Debug, Default, Encode, Decode)]
+#[derive(Debug, Default)]
 pub enum DiffDataRange {
     #[default]
     Unchanged,

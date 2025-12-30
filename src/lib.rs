@@ -10,6 +10,7 @@ pub mod diff2;
 pub mod indexed_png;
 pub mod tar;
 pub mod zip;
+pub mod diff3;
 
 use crate::checksum::chunk_checksum;
 use crate::indexed_png::{read_png, read_png_reader, write_png};
@@ -352,6 +353,7 @@ impl Display for ChunkProcessError {
         if let Some(s) = &self.diff_file {
             writeln!(f, "Diff file: {s}")?;
         }
+        writeln!(f, "Details: {:?}", self.inner)?;
         Ok(())
     }
 }

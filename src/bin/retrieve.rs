@@ -2,6 +2,7 @@
 #![feature(yeet_expr)]
 #![feature(try_blocks)]
 #![feature(decl_macro)]
+#![feature(likely_unlikely)]
 #![warn(clippy::all, clippy::nursery)]
 
 use anyhow::anyhow;
@@ -12,26 +13,23 @@ use log::{debug, info, warn};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
-use std::fs;
 use std::fs::File;
 use std::io::{stdin, Cursor, Read, Write};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::sync_channel;
 use std::thread::spawn;
-use bincode::config::standard;
-use rocksdb::{DBCompressionType, Options, WriteBatch, WriteOptions, DB};
+use std::{fs, hint};
 use threadpool::ThreadPool;
-use wplace_tools::diff2::{DiffDataRange, IndexEntry};
+use wplace_tools::diff_index::{collect_diff_files, make_key};
 use wplace_tools::indexed_png::{read_png_reader, write_chunk_png, write_png};
 use wplace_tools::tar::ChunksTarReader;
 use wplace_tools::{
-    apply_chunk, diff2, extract_datetime, flate2_decompress, open_file_range, quick_capture,
+    apply_chunk, diff3, extract_datetime, flate2_decompress, open_file_range, quick_capture,
     set_up_logger, stylized_progress_bar, validate_chunk_checksum, Canvas, ChunkNumber, ChunkProcessError,
     ExitOnError, CHUNK_DIMENSION, CHUNK_LENGTH,
 };
 use yeet_ops::yeet;
-use wplace_tools::diff_index::{collect_diff_files, make_key};
 
 #[derive(clap::Parser)]
 #[command(version)]
@@ -44,10 +42,6 @@ struct Args {
     /// Directory containing all the consecutive .diff files
     #[arg(short, long)]
     diff_dir: PathBuf,
-
-    /// RocksDB folder for diff index
-    #[arg(short = 'i', long)]
-    index_db: PathBuf,
 
     /// Path to the initial snapshot (tarball format)
     #[arg(short, long)]
@@ -113,28 +107,19 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or(0);
     let apply_list = &diff_list[base_start..=dest_snap_pos];
 
-    let diff_list_not_processed=collect_diff_list_not_processed(diff_list.clone(), &args.index_db)?;
-    if !diff_list_not_processed.is_empty() {
-        warn!("Diff index database missing or incomplete; creating it...");
-        create_index_db(diff_path.into(), diff_list.clone(), diff_list_not_processed, (&args.index_db).into())?;
-    }
-
-    info!("Indexing tarball...");
+    info!("Indexing initial tarball...");
     let tar = ChunksTarReader::open_with_index(&args.base_snapshot)?;
-
-    info!("Opening index db...");
-    let options = Options::default();
-    let index_db = DB::open(&options, args.index_db)?;
 
     info!("Retrieving...");
     let pb = stylized_progress_bar((apply_list.len() * chunks.len()) as u64);
 
     let image_saver = ImageSaverPool::new()?;
 
+    // Retrieve chunk from the initial tarball for later processes on it.
     let mut chunks_buf = chunks
         .iter()
         .map(|&n| {
-            let a: anyhow::Result<_> = try { (n, retrieve_chunk(&tar, n, true)?) };
+            let a: anyhow::Result<_> = try { (n, retrieve_tar_chunk(&tar, n, true)?) };
             a
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -153,34 +138,32 @@ fn main() -> anyhow::Result<()> {
                 fs::create_dir_all(&chunk_out)?;
 
                 let mut diff_data = vec![0_u8; CHUNK_LENGTH];
+                let mut diff_file =
+                    diff3::DiffFile::open_path(args.diff_dir.join(format!("{name}.diff")))?;
+                let chunk_index = diff_file.query_chunk(*n)?;
 
-                let mut key_buf = [0_u8; 100];
-                let entry_blob = index_db.get(make_key(name, *n, &mut key_buf))?;
-                let entry = match entry_blob {
+                let entry = match chunk_index {
                     None => {
                         // chunk had not been created in this snapshot
                         info!("Chunk not present in this snapshot '{}', skipping...", name);
                         return;
                     }
-                    Some(e) => {
-                        let e: (IndexEntry, usize) = bincode::decode_from_slice(&e, standard())?;
-                        e.0
-                    }
+                    Some(e) => e,
                 };
 
-                match entry.diff_data_range {
-                    DiffDataRange::Unchanged => {
-                        // just pass
+                if hint::unlikely(entry.is_changed()) {
+                    let reader = open_file_range(
+                        diff_path.join(format!("{name}.diff")),
+                        entry.pos,
+                        entry.len,
+                    )?;
+                    flate2_decompress(reader, &mut diff_data)?;
+                    apply_chunk(chunk_buf, <&[_; _]>::try_from(&diff_data[..]).unwrap());
+                    if !args.disable_csum {
+                        validate_chunk_checksum(chunk_buf, entry.checksum)?;
                     }
-                    DiffDataRange::Changed { pos, len } => {
-                        let reader =
-                            open_file_range(diff_path.join(format!("{name}.diff")), pos, len)?;
-                        flate2_decompress(reader, &mut diff_data)?;
-                        apply_chunk(chunk_buf, <&[_; _]>::try_from(&diff_data[..]).unwrap());
-                        if !args.disable_csum {
-                            validate_chunk_checksum(chunk_buf, entry.checksum)?;
-                        }
-                    }
+                } else {
+                    // just pass
                 }
 
                 let img_path = chunk_out.join(format!("{name}.png"));
@@ -261,7 +244,7 @@ fn expand_chunks_range(start: ChunkNumber, end: ChunkNumber) -> Vec<(u16, u16)> 
     collected
 }
 
-fn retrieve_chunk(
+fn retrieve_tar_chunk(
     snapshot: &ChunksTarReader,
     n: ChunkNumber,
     allow_non_exist: bool,
@@ -298,86 +281,4 @@ impl ImageSaverPool {
     fn join(self) {
         self.pool.join();
     }
-}
-
-fn collect_diff_list_not_processed(diff_list: Vec<String>, db_path: impl AsRef<Path>) -> anyhow::Result<Vec<String>> {
-    let track_file_path = db_path.as_ref().join("processed.txt");
-    let mut processed = std::collections::HashSet::new();
-    if track_file_path.exists() {
-        processed = std::fs::read_to_string(&track_file_path)?
-            .lines()
-            .map(|s| s.to_string())
-            .collect();
-    }
-
-    // skip diff files already processed
-    let diff_list = diff_list
-        .into_iter()
-        .filter(|x| !processed.contains(x))
-        .collect::<Vec<_>>();
-    Ok(diff_list)
-}
-
-fn create_index_db(
-    diff_path: PathBuf,
-    diff_list: Vec<String>,
-    diff_list_not_processed: Vec<String>,
-    db_path: PathBuf,
-) -> anyhow::Result<()> {
-    let track_file_path = db_path.join("processed.txt");
-    let remaining_diff_list_len = diff_list_not_processed.len();
-    info!("Number of all diff files: {}", diff_list.len());
-    info!("Skipped {} diff files", diff_list.len() - remaining_diff_list_len);
-
-    let (tx, rx) = sync_channel(16);
-
-    spawn(move || {
-        diff_list_not_processed.par_iter().for_each(|x| {
-            let mut reader = diff2::DiffFile::open(
-                File::open_buffered(diff_path.join(format!("{x}.diff"))).unwrap(),
-            )
-                .unwrap();
-            let index = reader.read_index().unwrap();
-            tx.send((x.clone(), index)).unwrap();
-        });
-    });
-
-    let mut opts = rocksdb::Options::default();
-    opts.create_if_missing(true);
-    opts.set_max_background_jobs(16);
-    opts.set_write_buffer_size(256 * 1048576);
-    opts.set_row_cache(&rocksdb::Cache::new_lru_cache(1 << 30));
-    opts.set_blob_cache(&rocksdb::Cache::new_lru_cache(1 << 30));
-    opts.set_compression_type(DBCompressionType::Zlib);
-    opts.increase_parallelism(16);
-    let db = rocksdb::DB::open(&opts, db_path.clone())?;
-
-    let pb = stylized_progress_bar(remaining_diff_list_len as u64);
-    let config = bincode::config::standard();
-
-    let mut track_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&track_file_path)?;
-
-    rx.into_iter().for_each(|(diff_name, index)| {
-        let mut key_buf = [0_u8; 100];
-        let mut value_buf = [0_u8; 100];
-
-        let mut write_batch = WriteBatch::new();
-        for x in index {
-            let key = make_key(&diff_name, x.0, &mut key_buf);
-            let value_len = bincode::encode_into_slice(x.1, &mut value_buf, config).unwrap();
-            let value = &value_buf[..value_len];
-            write_batch.put(&key, value);
-        }
-        db.write(write_batch).unwrap();
-        db.flush().unwrap();
-
-        writeln!(track_file, "{}", diff_name).unwrap();
-        track_file.flush().unwrap();
-        pb.inc(1);
-    });
-    pb.finish();
-    Ok(())
 }
