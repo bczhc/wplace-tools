@@ -37,7 +37,7 @@ archive='2025-09-21T09-35-13.789Z+2h49m.tar'
 archive-tool diff "$parent" "$archive" ./diff.bin
 ```
 
-Standalone file `diff.bin` saves all the changes from archive (1) to (2).
+File `diff.bin` saves all the changes from archive (1) to (2).
 
 ## Applying diff data
 
@@ -58,7 +58,7 @@ Archive `2025-09-21T09-35-13.789Z+2h49m` will be restored.
 
 ## Wplace incremental backup
 
-An [**incremental backup**](https://en.wikipedia.org/wiki/Incremental_backup) is one in which successive copies of the data contain only the portion that has changed since the preceding backup copy was made. That is, only an initial snapshot and all its later consecutive diff files need to be saved.
+Quoted from Wikipedia: an [**incremental backup**](https://en.wikipedia.org/wiki/Incremental_backup) is one in which successive copies of the data contain only the portion that has changed since the preceding backup copy was made. That is, only an initial snapshot and all its later consecutive diff files need to be saved.
 
 By the convention, name of all Wplace snapshots and diff files should be in [ISO 8601](https://en.wikipedia.org/wiki/ISO_8601) UTC datetime, e.g. `2025-09-21T06-32-28.284Z/` or `2025-09-21T06-32-28.284Z.tar` or `2025-09-21T06-32-28.284Z.diff`.
 
@@ -88,7 +88,7 @@ rm $snap2 $snap3 $snap4 $snap5
 
 Through incremental backup, one can store all Wplace snapshots locally, with a small disk usage.
 
-### Retrieving chunk images
+## Retrieving chunk images
 
 #### CLI usage
 
@@ -139,3 +139,7 @@ Through incremental backup, one can store all Wplace snapshots locally, with a s
   This produces this: (as of `2025-10-10T01-05-20.144Z`)
 
   https://github.com/user-attachments/assets/fdd2942f-7c5f-4fe9-a676-89f89d55ba97
+
+## Released diff files
+
+I've been making all the consecutive diffs for all the Wplace snapshots. https://github.com/bczhc/wplace-diffs is used for distribution and they're available for download directly.
