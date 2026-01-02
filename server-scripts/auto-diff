@@ -1,0 +1,107 @@
+#!/bin/env ruby
+
+require 'shellwords'
+require 'pathname'
+
+LIST_FILE = './list'
+DIFF_OUT_DIR = './diffs'
+
+# @return [Array<String>]
+def urls(archive_name)
+  `gh release -R murolem/wplace-archives view #{Shellwords.escape archive_name} --json assets | jq '.assets[].url' -r`
+    .chomp.split("\n")
+end
+
+def extract_datetime_string(name)
+  regex = /(20\d{2}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z)/
+  fail unless regex.match? name
+  name.scan(regex)[0][0]
+end
+
+# @return [Array<String>]
+def all_archives
+  names = `gh release -R murolem/wplace-archives list -L 5000 | cut -f1 | sort`
+            .chomp.split("\n")
+  names.map do |x|
+    extract_datetime_string x
+  end
+end
+
+## multiple .tar.gz -> (merge and decompress) -> one tarball stream [1] -> (convert to squashfs) -> .sqfs
+##
+## The squashfs contains: /a.tar, which is the original decompressed tarball (marked [1] above)
+def fetch_tarball_sqfs(name)
+  puts "Fetching #{name}..."
+  urls = urls name
+  lines = "set -e\n"
+  urls.each do |url|
+    lines += "curl -sL #{Shellwords.escape url}\n"
+  end
+  File.write("curl.sh", lines)
+  system "bash curl.sh | pv | gzip -d | ./tosqfs #{Shellwords.escape name}.sqfs" or fail
+  "#{name}.sqfs"
+end
+
+puts "Fetching list of archives..."
+File.write(LIST_FILE, all_archives.join("\n"))
+
+names = File.readlines(LIST_FILE, chomp: true)
+fail unless names.length >= 2
+
+diff_output_dir = DIFF_OUT_DIR
+unless File.exist? diff_output_dir
+  Dir.mkdir diff_output_dir
+end
+
+puts "Clearing old files..."
+system 'rm -rfv *.tar *.sqfs'
+system "rm -rfv #{Shellwords.escape DIFF_OUT_DIR}/.tmp*"
+
+latest = Dir.children(DIFF_OUT_DIR).sort.last
+latest = extract_datetime_string latest
+
+latest_snapshot_index = names.find_index(latest)
+fail if latest_snapshot_index == nil
+names = names.drop(latest_snapshot_index)
+
+if names.length < 2
+  puts 'No more snapshots to be processed; sleep and exit'
+  sleep(24*3600)
+  exit 0
+end
+
+first_archive = fetch_tarball_sqfs("world-#{names[0]}")
+parent = first_archive
+
+puts "Use initial parent: #{parent}"
+
+names.each_cons(2) do |pair|
+  diff_target = fetch_tarball_sqfs("world-#{pair[1]}")
+  puts "Diffing: #{parent} -> #{diff_target}"
+
+  diff_file_name = "#{pair[1]}.diff"
+  diff_file_path = File.join(DIFF_OUT_DIR, diff_file_name)
+  if File.exist? diff_file_path
+    puts "Skipped #{diff_file_name}"
+    next
+  end
+
+  # please ensure 'sudo mount/umount' can be run without a password prompt
+  puts "Mounting..."
+  system "sudo mount #{Shellwords.escape parent} /mnt/sq1" or fail
+  system "sudo mount #{Shellwords.escape diff_target} /mnt/sq2" or fail
+
+  diff_cmd = "~/archive-tool diff /mnt/sq1/a.tar /mnt/sq2/a.tar #{Shellwords.escape diff_file_path}"
+  puts "CMD: #{diff_cmd}"
+  result = system diff_cmd
+  puts "Unmounting..."
+  system 'sudo umount /mnt/sq1; sudo umount /mnt/sq2'
+  result or fail
+
+  system "gzip #{Shellwords.escape diff_file_path}" or fail
+  system "./upload #{Shellwords.escape diff_file_path}.gz" or fail
+  system "rm -rf #{Shellwords.escape diff_file_path}.gz" or fail
+  system "rm #{Shellwords.escape parent}" or fail
+
+  parent = diff_target
+end

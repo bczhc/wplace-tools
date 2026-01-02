@@ -1,0 +1,18 @@
+#!/bin/bash
+
+set -e
+
+[ $# -eq 0 ] && echo 'Usage: cmd <file>' && exit 0
+
+counter=0
+max=3
+
+while :; do
+	[ $counter -eq $max ] && exit 1
+	if (echo | gh release -R bczhc/wplace-diffs create "$(basename "$1")" "$1"); then
+		exit 0
+	else
+		((++counter))
+	fi
+done
+

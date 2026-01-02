@@ -1,0 +1,11 @@
+#!/bin/bash
+
+count=0
+max=2
+
+while [ $count -lt $max ]; do
+    ./auto-diff
+    sleep 180
+    ((count++))
+    echo "Current count: $count"
+done
