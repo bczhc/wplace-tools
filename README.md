@@ -142,4 +142,4 @@ Through incremental backup, one can store all Wplace snapshots locally, with a s
 
 ## Released diff files
 
-I've been making all the consecutive diffs for all the Wplace snapshots. https://github.com/bczhc/wplace-diffs is used for distribution and they're available for download directly.
+I've been making all the consecutive diffs for all the Wplace snapshots. [wplace-diffs](https://github.com/bczhc/wplace-diffs) is used for distribution and they're available for download directly.
