@@ -34,6 +34,7 @@ mod cli {
     use wplace_tools::TilesRange;
 
     #[derive(Debug, Parser)]
+    #[command(author, version)]
     /// Tools for Wplace snapshots
     pub struct Cli {
         #[command(subcommand)]
@@ -304,12 +305,13 @@ fn main() -> anyhow::Result<()> {
         }
 
         Commands::Show { diff } => {
-            let mut reader = diff3::DiffFile::open(File::open_buffered(&diff)?)?;
+            let mut diff_file = diff3::DiffFile::open(File::open_buffered(&diff)?)?;
+            println!("Version: {}", diff3::VERSION);
             println!(
                 "Metadata: {}",
-                serde_json::to_string(&reader.metadata).unwrap()
+                serde_json::to_string(&diff_file.metadata).unwrap()
             );
-            let index = reader.collect_index()?;
+            let index = diff_file.collect_index()?;
             println!("Total chunks: {}", index.len());
             println!(
                 "Changed chunks: {}",

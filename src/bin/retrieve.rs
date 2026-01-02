@@ -25,7 +25,7 @@ use wplace_tools::{
 use yeet_ops::yeet;
 
 #[derive(clap::Parser)]
-#[command(version)]
+#[command(author, version)]
 /// Chunk image retrieval tool
 struct Args {
     /// Chunk(s) to retrieve. Format: x1-y1,x2-y2,x3-y3,... or x1-y1..x2-y2
