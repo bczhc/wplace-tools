@@ -20,6 +20,7 @@ use lazy_regex::regex;
 use log::error;
 use pathdiff::diff_paths;
 use regex::Regex;
+use squashfs_reader::FileSystem;
 use std::collections::{BTreeMap, HashMap};
 use std::env::set_var;
 use std::ffi::OsStr;
@@ -483,15 +484,42 @@ pub trait DiffFilesCollector {
 
     fn contains(&self, diff_name: &str) -> bool;
 
-    fn first(&self) -> Iso8601Name;
+    fn name_iter<'a>(&'a self) -> Box<dyn ExactSizeIterator<Item = &'a Iso8601Name> + 'a>;
 
-    fn last(&self) -> Iso8601Name;
+    fn first(&self) -> Iso8601Name {
+        self.name_iter()
+            .next()
+            // not empty
+            .unwrap()
+            .clone()
+    }
+
+    fn last(&self) -> Iso8601Name {
+        self.name_iter()
+            .last()
+            // not empty
+            .unwrap()
+            .clone()
+    }
 
     fn range_iter(
         &self,
         start_name: &str,
         end_name: &str,
-    ) -> Box<dyn ExactSizeIterator<Item = Iso8601Name> + '_>;
+    ) -> Box<dyn ExactSizeIterator<Item = Iso8601Name> + '_> {
+        let result: Option<_> = try {
+            let start_pos = self.name_iter().position(|x| x == start_name)?;
+            let end_pos = self.name_iter().position(|x| x == end_name)?;
+            let length = end_pos - start_pos + 1;
+            let iter = self
+                .name_iter()
+                .skip(start_pos)
+                .take(length)
+                .map(|x| x.clone());
+            Box::new(iter) as Box<dyn ExactSizeIterator<Item = Iso8601Name>>
+        };
+        result.unwrap_or_else(|| Box::new(iter::empty()))
+    }
 }
 
 pub struct DirDiffFilesCollector {
@@ -500,8 +528,8 @@ pub struct DirDiffFilesCollector {
 
 impl DirDiffFilesCollector {
     pub fn new(root: impl IntoIterator<Item = impl AsRef<Path>>) -> anyhow::Result<Self> {
-        let mut read_dir_and_append = |root: &Arc<PathBuf>,
-                                       tree: &mut BTreeMap<Iso8601Name, Arc<PathBuf>>|
+        let read_dir_and_append = |root: &Arc<PathBuf>,
+                                   tree: &mut BTreeMap<Iso8601Name, Arc<PathBuf>>|
          -> anyhow::Result<()> {
             for x in WalkDir::new(&**root) {
                 let x = x?;
@@ -537,6 +565,9 @@ impl DirDiffFilesCollector {
         for root in &roots {
             read_dir_and_append(root, &mut tree)?;
         }
+        if tree.is_empty() {
+            yeet!(anyhow!("No diff files found from diff sources"));
+        }
         Ok(Self { names: tree })
     }
 }
@@ -552,47 +583,60 @@ impl DiffFilesCollector for DirDiffFilesCollector {
         )?))
     }
 
-    fn first(&self) -> Iso8601Name {
-        self.names
-            .iter()
-            .next()
-            // not empty
-            .unwrap()
-            .0
-            .clone()
+    fn contains(&self, diff_name: &str) -> bool {
+        self.names.get(diff_name).is_some()
     }
 
-    fn last(&self) -> Iso8601Name {
-        self.names
-            .iter()
-            .last()
-            // not empty
-            .unwrap()
-            .0
-            .clone()
+    fn name_iter<'a>(&'a self) -> Box<dyn ExactSizeIterator<Item = &'a Iso8601Name> + 'a> {
+        Box::new(self.names.iter().map(|x| x.0))
+    }
+}
+
+pub struct SqfsDiffFilesCollector {
+    fs_list: Vec<FileSystem<File>>,
+    names: BTreeMap<Iso8601Name, usize /* index of fs_list */>,
+}
+
+impl SqfsDiffFilesCollector {
+    pub fn new(images: impl IntoIterator<Item = impl AsRef<Path>>) -> anyhow::Result<Self> {
+        let mut fs_vec = Vec::new();
+        let mut tree = BTreeMap::new();
+
+        for (idx, path) in images.into_iter().enumerate() {
+            let fs = FileSystem::from_path(path.as_ref())?;
+            let root = fs.read_dir("/")?;
+            for x in root {
+                let e = x?;
+                let Some(name) = extract_datetime(e.name()) else {
+                    continue;
+                };
+                tree.insert(name, idx);
+            }
+            fs_vec.push(fs);
+        }
+        Ok(Self {
+            fs_list: fs_vec,
+            names: tree,
+        })
+    }
+}
+
+impl DiffFilesCollector for SqfsDiffFilesCollector {
+    fn reader(&self, diff_name: &str) -> anyhow::Result<Box<dyn ReadSeek>> {
+        let &index = self
+            .names
+            .get(diff_name)
+            .ok_or_else(|| anyhow!("No such name"))?;
+        let fs = &self.fs_list[index];
+        let reader = fs.open(format!("{diff_name}.diff"))?;
+        Ok(Box::new(reader))
     }
 
     fn contains(&self, diff_name: &str) -> bool {
         self.names.get(diff_name).is_some()
     }
 
-    fn range_iter(
-        &self,
-        start_name: &str,
-        end_name: &str,
-    ) -> Box<dyn ExactSizeIterator<Item = Iso8601Name> + '_> {
-        let result: Option<_> = try {
-            let start_pos = self.names.iter().position(|x| x.0 == start_name)?;
-            let end_pos = self.names.iter().rposition(|x| x.0 == end_name)?;
-            let length = end_pos - start_pos + 1;
-            let iter = self
-                .names
-                .iter()
-                .skip(start_pos)
-                .take(length)
-                .map(|x| x.0.clone());
-            Box::new(iter) as Box<dyn ExactSizeIterator<Item = Iso8601Name>>
-        };
-        result.unwrap_or_else(|| Box::new(iter::empty()))
+    fn name_iter<'a>(&'a self) -> Box<dyn ExactSizeIterator<Item = &'a Iso8601Name> + 'a> {
+        Box::new(self.names.iter().map(|x| x.0))
     }
 }

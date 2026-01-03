@@ -19,12 +19,7 @@ use std::{fs, hint};
 use threadpool::ThreadPool;
 use wplace_tools::indexed_png::{read_png_reader, write_png};
 use wplace_tools::tar::ChunksTarReader;
-use wplace_tools::{
-    apply_chunk, diff3, extract_datetime, flate2_decompress, open_file_range, quick_capture,
-    reader_range, set_up_logger, stylized_progress_bar, validate_chunk_checksum, Canvas, ChunkNumber,
-    ChunkProcessError, DiffFilesCollector, DirDiffFilesCollector, ExitOnError, CHUNK_DIMENSION,
-    CHUNK_LENGTH,
-};
+use wplace_tools::{apply_chunk, diff3, extract_datetime, flate2_decompress, open_file_range, quick_capture, reader_range, set_up_logger, stylized_progress_bar, validate_chunk_checksum, Canvas, ChunkNumber, ChunkProcessError, DiffFilesCollector, DirDiffFilesCollector, ExitOnError, SqfsDiffFilesCollector, CHUNK_DIMENSION, CHUNK_LENGTH};
 use yeet_ops::yeet;
 
 #[derive(clap::Parser)]
@@ -37,7 +32,7 @@ struct Args {
 
     /// Directory or SquashFS image containing all the .diff files
     ///
-    #[arg(short, long)]
+    #[arg(short, long, required = true)]
     diff_source: Vec<PathBuf>,
 
     /// Path to the initial snapshot (tarball format)
@@ -73,7 +68,17 @@ fn main() -> anyhow::Result<()> {
     let chunks = parse_chunk_string(&args.chunk)?;
 
     info!("Collecting diff files...");
-    let diff_source = DirDiffFilesCollector::new(&args.diff_source)?;
+    let diff_source: &(dyn DiffFilesCollector + Send + Sync + 'static) = if args.diff_source.iter().all(|x| x.is_file()) {
+        &SqfsDiffFilesCollector::new(&args.diff_source)?
+    } else if args.diff_source.iter().all(|x| x.is_dir()) {
+        &DirDiffFilesCollector::new(&args.diff_source)?
+    } else {
+        return Err(anyhow!(
+            "SquashFS and Dir diff inputs cannot be mixed."
+        ));
+    };
+
+    info!("Diff file count: {}", diff_source.name_iter().len());
     let goal_snapshot = args.at.unwrap_or_else(|| diff_source.last());
 
     if !diff_source.contains(&goal_snapshot) {
@@ -81,8 +86,6 @@ fn main() -> anyhow::Result<()> {
             "Cannot find the destination snapshot from diff sources"
         ));
     }
-    let base_snapshot_name = extract_datetime(&args.base_snapshot)
-        .ok_or_else(|| anyhow!("Malformed base snapshot name"))?;
 
     let apply_list_start = diff_source.first();
     let apply_list = diff_source.range_iter(&apply_list_start, &goal_snapshot);
@@ -114,51 +117,49 @@ fn main() -> anyhow::Result<()> {
         };
 
         // parallelize if multiple chunks are requested
-        chunks_buf.par_iter_mut().for_each(
-            |(n, chunk_buf)| {
-                pb.inc(1);
-                let result: anyhow::Result<()> = try {
-                    let chunk_out = args.out.join(format!("{}-{}", n.0, n.1));
-                    fs::create_dir_all(&chunk_out)?;
+        chunks_buf.par_iter_mut().for_each(|(n, chunk_buf)| {
+            pb.inc(1);
+            let result: anyhow::Result<()> = try {
+                let chunk_out = args.out.join(format!("{}-{}", n.0, n.1));
+                fs::create_dir_all(&chunk_out)?;
 
-                    let mut diff_data = vec![0_u8; CHUNK_LENGTH];
-                    let mut diff_file = diff3::DiffFile::open(diff_source.reader(&name)?)?;
-                    let chunk_index = diff_file.query_chunk(*n)?;
+                let mut diff_data = vec![0_u8; CHUNK_LENGTH];
+                let mut diff_file = diff3::DiffFile::open(diff_source.reader(&name)?)?;
+                let chunk_index = diff_file.query_chunk(*n)?;
 
-                    let entry = match chunk_index {
-                        None => {
-                            // chunk had not been created in this snapshot
-                            info!("Chunk not present in this snapshot '{}', skipping...", name);
-                            return;
-                        }
-                        Some(e) => e,
-                    };
-
-                    if hint::unlikely(entry.is_changed()) {
-                        let portion_reader = diff_file.open_chunk(&entry)?;
-                        flate2_decompress(portion_reader, &mut diff_data)?;
-                        apply_chunk(chunk_buf, <&[_; _]>::try_from(&diff_data[..]).unwrap());
-                        if !args.disable_csum {
-                            validate_chunk_checksum(chunk_buf, entry.checksum)?;
-                        }
-                    } else {
-                        // just pass
+                let entry = match chunk_index {
+                    None => {
+                        // chunk had not been created in this snapshot
+                        info!("Chunk not present in this snapshot '{}', skipping...", name);
+                        return;
                     }
-
-                    let img_path = chunk_out.join(format!("{name}.png"));
-                    if args.all || is_last_snapshot {
-                        image_saver.submit(img_path, CHUNK_DIMENSION, chunk_buf.clone());
-                    }
+                    Some(e) => e,
                 };
-                result
-                    .map_err(|e| ChunkProcessError {
-                        inner: e,
-                        chunk_number: *n,
-                        diff_file: Some(name.clone()),
-                    })
-                    .exit_on_error();
-            },
-        );
+
+                if hint::unlikely(entry.is_changed()) {
+                    let portion_reader = diff_file.open_chunk(&entry)?;
+                    flate2_decompress(portion_reader, &mut diff_data)?;
+                    apply_chunk(chunk_buf, <&[_; _]>::try_from(&diff_data[..]).unwrap());
+                    if !args.disable_csum {
+                        validate_chunk_checksum(chunk_buf, entry.checksum)?;
+                    }
+                } else {
+                    // just pass
+                }
+
+                let img_path = chunk_out.join(format!("{name}.png"));
+                if args.all || is_last_snapshot {
+                    image_saver.submit(img_path, CHUNK_DIMENSION, chunk_buf.clone());
+                }
+            };
+            result
+                .map_err(|e| ChunkProcessError {
+                    inner: e,
+                    chunk_number: *n,
+                    diff_file: Some(name.clone()),
+                })
+                .exit_on_error();
+        });
         // save the stitched image
         if let Some(mut c) = stitch_canvas {
             let stitch_out = args.out.join("stitched");
