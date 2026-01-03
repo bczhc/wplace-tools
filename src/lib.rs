@@ -21,16 +21,14 @@ use log::error;
 use pathdiff::diff_paths;
 use regex::Regex;
 use squashfs_reader::FileSystem;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::env::set_var;
 use std::ffi::OsStr;
-use std::fmt::{format, Display, Formatter};
-use std::fs::{read_dir, File};
+use std::fmt::{Display, Formatter};
+use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom, Take};
-use std::mem::take;
 use std::path::{Path, PathBuf};
 use std::process::exit;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::{env, fmt, fs, hint, io, iter};
 use walkdir::WalkDir;
@@ -409,7 +407,7 @@ impl DirChunkFetcher {
 impl ChunkFetcher for DirChunkFetcher {
     fn chunks_iter(&self) -> Box<dyn Iterator<Item = ChunkNumber> + Send + '_> {
         let Some(c) = self.chunks.as_ref() else {
-            return Box::new(std::iter::empty());
+            return Box::new(iter::empty());
         };
         Box::new(c.iter().copied())
     }
@@ -511,11 +509,7 @@ pub trait DiffFilesCollector {
             let start_pos = self.name_iter().position(|x| x == start_name)?;
             let end_pos = self.name_iter().position(|x| x == end_name)?;
             let length = end_pos - start_pos + 1;
-            let iter = self
-                .name_iter()
-                .skip(start_pos)
-                .take(length)
-                .map(|x| x.clone());
+            let iter = self.name_iter().skip(start_pos).take(length).cloned();
             Box::new(iter) as Box<dyn ExactSizeIterator<Item = Iso8601Name>>
         };
         result.unwrap_or_else(|| Box::new(iter::empty()))
@@ -584,7 +578,7 @@ impl DiffFilesCollector for DirDiffFilesCollector {
     }
 
     fn contains(&self, diff_name: &str) -> bool {
-        self.names.get(diff_name).is_some()
+        self.names.contains_key(diff_name)
     }
 
     fn name_iter<'a>(&'a self) -> Box<dyn ExactSizeIterator<Item = &'a Iso8601Name> + 'a> {
@@ -633,7 +627,7 @@ impl DiffFilesCollector for SqfsDiffFilesCollector {
     }
 
     fn contains(&self, diff_name: &str) -> bool {
-        self.names.get(diff_name).is_some()
+        self.names.contains_key(diff_name)
     }
 
     fn name_iter<'a>(&'a self) -> Box<dyn ExactSizeIterator<Item = &'a Iso8601Name> + 'a> {

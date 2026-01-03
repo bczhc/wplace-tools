@@ -6,20 +6,22 @@
 #![warn(clippy::all, clippy::nursery)]
 
 use anyhow::anyhow;
-use byteorder::{ReadBytesExt, LE};
 use clap::Parser;
 use lazy_regex::regex;
 use log::{debug, info, warn};
 use rayon::prelude::*;
-use std::io::Read;
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::{fs, hint};
 use threadpool::ThreadPool;
 use wplace_tools::indexed_png::{read_png_reader, write_png};
 use wplace_tools::tar::ChunksTarReader;
-use wplace_tools::{apply_chunk, diff3, extract_datetime, flate2_decompress, open_file_range, quick_capture, reader_range, set_up_logger, stylized_progress_bar, validate_chunk_checksum, Canvas, ChunkNumber, ChunkProcessError, DiffFilesCollector, DirDiffFilesCollector, ExitOnError, SqfsDiffFilesCollector, CHUNK_DIMENSION, CHUNK_LENGTH};
+use wplace_tools::{
+    CHUNK_DIMENSION, CHUNK_LENGTH, Canvas, ChunkNumber, ChunkProcessError, DiffFilesCollector,
+    DirDiffFilesCollector, ExitOnError, SqfsDiffFilesCollector, apply_chunk, diff3,
+    flate2_decompress, quick_capture, set_up_logger, stylized_progress_bar,
+    validate_chunk_checksum,
+};
 use yeet_ops::yeet;
 
 #[derive(clap::Parser)]
@@ -68,15 +70,14 @@ fn main() -> anyhow::Result<()> {
     let chunks = parse_chunk_string(&args.chunk)?;
 
     info!("Collecting diff files...");
-    let diff_source: &(dyn DiffFilesCollector + Send + Sync + 'static) = if args.diff_source.iter().all(|x| x.is_file()) {
-        &SqfsDiffFilesCollector::new(&args.diff_source)?
-    } else if args.diff_source.iter().all(|x| x.is_dir()) {
-        &DirDiffFilesCollector::new(&args.diff_source)?
-    } else {
-        return Err(anyhow!(
-            "SquashFS and Dir diff inputs cannot be mixed."
-        ));
-    };
+    let diff_source: &(dyn DiffFilesCollector + Send + Sync + 'static) =
+        if args.diff_source.iter().all(|x| x.is_file()) {
+            &SqfsDiffFilesCollector::new(&args.diff_source)?
+        } else if args.diff_source.iter().all(|x| x.is_dir()) {
+            &DirDiffFilesCollector::new(&args.diff_source)?
+        } else {
+            return Err(anyhow!("SquashFS and Dir diff inputs cannot be mixed."));
+        };
 
     info!("Diff file count: {}", diff_source.name_iter().len());
     let goal_snapshot = args.at.unwrap_or_else(|| diff_source.last());

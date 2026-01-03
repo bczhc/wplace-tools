@@ -2,10 +2,10 @@
 //! Utility to read files inside a ZIP directly.
 
 use crate::indexed_png::read_png_reader;
-use crate::{ChunkNumber, CHUNK_LENGTH};
+use crate::{CHUNK_LENGTH, ChunkNumber};
 use lazy_regex::regex;
-use rawzip::path::{RawPath, ZipFilePath};
 use rawzip::RECOMMENDED_BUFFER_SIZE;
+use rawzip::path::{RawPath, ZipFilePath};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io;

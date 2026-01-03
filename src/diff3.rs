@@ -6,7 +6,7 @@
 //! Magic (11B) | Version (u16) | IndexPos (u64) | EntryCount (u32) | Metadata | Diff Data | Sorted Index Entries...
 
 use crate::ChunkNumber;
-use byteorder::{ReadBytesExt, WriteBytesExt, LE};
+use byteorder::{LE, ReadBytesExt, WriteBytesExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
