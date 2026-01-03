@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::{fs, hint};
 use threadpool::ThreadPool;
 use wplace_tools::diff_index::collect_diff_files;
-use wplace_tools::indexed_png::{read_png_reader, write_chunk_png, write_png};
+use wplace_tools::indexed_png::{read_png_reader, write_png};
 use wplace_tools::tar::ChunksTarReader;
 use wplace_tools::{
     CHUNK_DIMENSION, CHUNK_LENGTH, Canvas, ChunkNumber, ChunkProcessError, ExitOnError,

@@ -1,7 +1,11 @@
+#![allow(dead_code)]
+//! Utility to read files inside a ZIP directly.
+
 use crate::indexed_png::read_png_reader;
-use crate::{CHUNK_LENGTH, ChunkNumber};
-use rawzip::RECOMMENDED_BUFFER_SIZE;
+use crate::{ChunkNumber, CHUNK_LENGTH};
+use lazy_regex::regex;
 use rawzip::path::{RawPath, ZipFilePath};
+use rawzip::RECOMMENDED_BUFFER_SIZE;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io;
@@ -48,7 +52,7 @@ fn collect_zip_entries(path: impl AsRef<Path>) -> anyhow::Result<ChunkIndexMap> 
     assert!(file_path.ends_with('/'));
     let root_path = String::from(file_path);
 
-    let map = HashMap::new();
+    let mut map = HashMap::new();
     loop {
         let Some(e) = entries.next_entry()? else {
             break;
@@ -62,24 +66,24 @@ fn collect_zip_entries(path: impl AsRef<Path>) -> anyhow::Result<ChunkIndexMap> 
             continue;
         }
 
-        // let chunk_path_regex = regex!(r"^(\d+)/(\d+)\.png$");
-        // assert!(chunk_path_regex.is_match(filename));
-        // let captures = chunk_path_regex.captures(filename).unwrap();
-        // let chunk_x = captures
-        //     .get(1)
-        //     .unwrap()
-        //     .as_str()
-        //     .parse::<u16>()
-        //     .expect("Not an integer");
-        // let chunk_y = captures
-        //     .get(2)
-        //     .unwrap()
-        //     .as_str()
-        //     .parse::<u16>()
-        //     .expect("Not an integer");
-        //
-        // let data_range = zip.get_entry(e.wayfinder())?.compressed_data_range();
-        // map.insert((chunk_x, chunk_y), data_range);
+        let chunk_path_regex = regex!(r"^(\d+)/(\d+)\.png$");
+        assert!(chunk_path_regex.is_match(filename));
+        let captures = chunk_path_regex.captures(filename).unwrap();
+        let chunk_x = captures
+            .get(1)
+            .unwrap()
+            .as_str()
+            .parse::<u16>()
+            .expect("Not an integer");
+        let chunk_y = captures
+            .get(2)
+            .unwrap()
+            .as_str()
+            .parse::<u16>()
+            .expect("Not an integer");
+
+        let data_range = zip.get_entry(e.wayfinder())?.compressed_data_range();
+        map.insert((chunk_x, chunk_y), data_range);
     }
 
     Ok(map)
