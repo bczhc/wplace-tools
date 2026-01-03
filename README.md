@@ -93,10 +93,10 @@ Through incremental backup, one can store all Wplace snapshots locally, with a s
 #### CLI usage
 
 <pre>Chunk image retrieval tool
-<u style="text-decoration-style:solid"><b>Usage:</b></u> <b>retrieve</b> [OPTIONS] <b>--chunk</b> &lt;CHUNK&gt; <b>--diff-dir</b> &lt;DIFF_DIR&gt; <b>--base-snapshot</b> &lt;BASE_SNAPSHOT&gt; <b>--out</b> &lt;OUT&gt;
+<u style="text-decoration-style:solid"><b>Usage:</b></u> <b>retrieve</b> [OPTIONS] <b>--chunk</b> &lt;CHUNK&gt; <b>--diff-source</b> &lt;DIFF_SOURCE&gt; <b>--base-snapshot</b> &lt;BASE_SNAPSHOT&gt; <b>--out</b> &lt;OUT&gt;
 <u style="text-decoration-style:solid"><b>Options:</b></u>
   <b>-c</b>, <b>--chunk</b> &lt;CHUNK&gt;                  Chunk(s) to retrieve. Format: x1-y1,x2-y2,x3-y3,... or x1-y1..x2-y2
-  <b>-d</b>, <b>--diff-dir</b> &lt;DIFF_DIR&gt;            Directory containing all the consecutive .diff files
+  <b>-d</b>, <b>--diff-source</b> &lt;DIFF_SOURCE&gt;      Directory or SquashFS image containing all the .diff files
   <b>-b</b>, <b>--base-snapshot</b> &lt;BASE_SNAPSHOT&gt;  Path to the initial snapshot (tarball format)
   <b>-o</b>, <b>--out</b> &lt;OUT&gt;                      Output path
   <b>-t</b>, <b>--at</b> &lt;AT&gt;                        Snapshot name of the restoration point. If not present, use the newest one in `diff_dir`
