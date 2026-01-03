@@ -9,7 +9,10 @@ use std::iter;
 use std::path::PathBuf;
 use wplace_tools::indexed_png::{read_png, write_png};
 
-/// Base63 with Wplace palette.
+/// Base63 with Wplace palette
+///
+/// This tool represents binary data to a PNG image (or vise versa) in Wplace colors.
+/// Thus, you can record any binary data on the Wplace canvas.
 #[derive(Parser, Debug)]
 #[command(version = "0.1.0")]
 struct Args {

@@ -35,7 +35,7 @@ mod cli {
 
     #[derive(Debug, Parser)]
     #[command(author, version)]
-    /// Tools for Wplace snapshots
+    /// Tools for Wplace snapshots (mainly diffing/restoring)
     pub struct Cli {
         #[command(subcommand)]
         pub command: Commands,
