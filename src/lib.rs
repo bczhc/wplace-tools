@@ -14,18 +14,24 @@ pub mod zip;
 use crate::checksum::chunk_checksum;
 use crate::indexed_png::{read_png, read_png_reader, write_png};
 use crate::tar::ChunksTarReader;
+use anyhow::anyhow;
 use indicatif::{ProgressBar, ProgressStyle};
 use lazy_regex::regex;
 use log::error;
 use pathdiff::diff_paths;
 use regex::Regex;
+use std::collections::{BTreeMap, HashMap};
 use std::env::set_var;
-use std::fmt::{Display, Formatter};
-use std::fs::File;
+use std::ffi::OsStr;
+use std::fmt::{format, Display, Formatter};
+use std::fs::{read_dir, File};
 use std::io::{BufReader, Read, Seek, SeekFrom, Take};
+use std::mem::take;
 use std::path::{Path, PathBuf};
 use std::process::exit;
-use std::{env, fmt, fs, hint, io};
+use std::rc::Rc;
+use std::sync::Arc;
+use std::{env, fmt, fs, hint, io, iter};
 use walkdir::WalkDir;
 use yeet_ops::yeet;
 
@@ -203,9 +209,18 @@ pub macro unwrap_os_str($x:expr) {
     $x.to_str().expect("Invalid UTF-8")
 }
 
-pub fn extract_datetime(s: &str) -> Option<String> {
+pub type Iso8601Name = String;
+
+pub fn extract_datetime(s: impl AsRef<OsStr>) -> Option<Iso8601Name> {
     let regex = regex!(r"(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z)");
-    Some(regex.captures_iter(s).next()?.get(1)?.as_str().to_string())
+    Some(
+        regex
+            .captures_iter(s.as_ref().to_str()?)
+            .next()?
+            .get(1)?
+            .as_str()
+            .to_string(),
+    )
 }
 
 #[inline(always)]
@@ -224,9 +239,14 @@ pub fn open_file_range(
     pos: u64,
     len: u64,
 ) -> io::Result<Take<BufReader<File>>> {
-    let mut file = File::open_buffered(path)?;
-    file.seek(SeekFrom::Start(pos))?;
-    Ok(file.take(len))
+    let file = File::open_buffered(path)?;
+    reader_range(file, pos, len)
+}
+
+#[inline(always)]
+pub fn reader_range<R: Read + Seek>(mut reader: R, pos: u64, len: u64) -> io::Result<Take<R>> {
+    reader.seek(SeekFrom::Start(pos))?;
+    Ok(reader.take(len))
 }
 
 #[inline(always)]
@@ -454,48 +474,125 @@ impl ChunkFetcher for TarChunkFetcher {
     }
 }
 
-pub mod diff_index {
-    use crate::{ChunkNumber, extract_datetime};
-    use anyhow::anyhow;
-    use byteorder::LE;
-    use std::ffi::OsStr;
-    use std::path::Path;
+pub trait ReadSeek: Read + Seek {}
 
-    #[inline(always)]
-    pub fn make_key<'a>(diff_name: &str, chunk: ChunkNumber, key_buf: &'a mut [u8]) -> &'a [u8] {
-        let buf = key_buf;
-        let diff_name_len = diff_name.len();
-        assert!(buf.len() >= diff_name_len + 4);
-        buf[..diff_name_len].copy_from_slice(diff_name.as_bytes());
-        use byteorder::ByteOrder;
-        LE::write_u16(&mut buf[diff_name_len..], chunk.0);
-        LE::write_u16(&mut buf[(diff_name_len + 2)..], chunk.1);
-        &buf[..(diff_name_len + 4)]
+impl<X: Read + Seek> ReadSeek for X {}
+
+pub trait DiffFilesCollector {
+    fn reader(&self, diff_name: &str) -> anyhow::Result<Box<dyn ReadSeek>>;
+
+    fn contains(&self, diff_name: &str) -> bool;
+
+    fn first(&self) -> Iso8601Name;
+
+    fn last(&self) -> Iso8601Name;
+
+    fn range_iter(
+        &self,
+        start_name: &str,
+        end_name: &str,
+    ) -> Box<dyn ExactSizeIterator<Item = Iso8601Name> + '_>;
+}
+
+pub struct DirDiffFilesCollector {
+    pub names: BTreeMap<Iso8601Name, Arc<PathBuf>>,
+}
+
+impl DirDiffFilesCollector {
+    pub fn new(root: impl IntoIterator<Item = impl AsRef<Path>>) -> anyhow::Result<Self> {
+        let mut read_dir_and_append = |root: &Arc<PathBuf>,
+                                       tree: &mut BTreeMap<Iso8601Name, Arc<PathBuf>>|
+         -> anyhow::Result<()> {
+            for x in WalkDir::new(&**root) {
+                let x = x?;
+                if x.path()
+                    .extension()
+                    .map(|x| x.to_ascii_lowercase())
+                    .as_deref()
+                    != Some(OsStr::new("diff"))
+                {
+                    continue;
+                }
+                if x.path().is_file() {
+                    let filename = x
+                        .file_name()
+                        .to_str()
+                        .ok_or_else(|| anyhow!("Invalid filename"))?;
+                    tree.insert(
+                        extract_datetime(filename)
+                            .ok_or_else(|| anyhow!("Malformed diff filename"))?,
+                        Arc::clone(root),
+                    );
+                }
+            }
+            Ok(())
+        };
+
+        let roots = root
+            .into_iter()
+            .map(|x| Arc::new(x.as_ref().to_path_buf()))
+            .collect::<Vec<_>>();
+
+        let mut tree = BTreeMap::new();
+        for root in &roots {
+            read_dir_and_append(root, &mut tree)?;
+        }
+        Ok(Self { names: tree })
+    }
+}
+
+impl DiffFilesCollector for DirDiffFilesCollector {
+    fn reader(&self, diff_name: &str) -> anyhow::Result<Box<dyn ReadSeek>> {
+        let root = self
+            .names
+            .get(diff_name)
+            .ok_or_else(|| anyhow!("No entry: {diff_name}"))?;
+        Ok(Box::new(File::open_buffered(
+            root.join(format!("{diff_name}.diff")),
+        )?))
     }
 
-    pub fn collect_diff_files(root: impl AsRef<Path>) -> anyhow::Result<Vec<String>> {
-        let mut diff_list = Vec::new();
-        for x in walkdir::WalkDir::new(root) {
-            let x = x?;
-            if x.path()
-                .extension()
-                .map(|x| x.to_ascii_lowercase())
-                .as_deref()
-                != Some(OsStr::new("diff"))
-            {
-                continue;
-            }
-            if x.path().is_file() {
-                let filename = x
-                    .file_name()
-                    .to_str()
-                    .ok_or_else(|| anyhow!("Invalid filename"))?;
-                diff_list.push(
-                    extract_datetime(filename).ok_or_else(|| anyhow!("Malformed diff filename"))?,
-                );
-            }
-        }
-        diff_list.sort();
-        Ok(diff_list)
+    fn first(&self) -> Iso8601Name {
+        self.names
+            .iter()
+            .next()
+            // not empty
+            .unwrap()
+            .0
+            .clone()
+    }
+
+    fn last(&self) -> Iso8601Name {
+        self.names
+            .iter()
+            .last()
+            // not empty
+            .unwrap()
+            .0
+            .clone()
+    }
+
+    fn contains(&self, diff_name: &str) -> bool {
+        self.names.get(diff_name).is_some()
+    }
+
+    fn range_iter(
+        &self,
+        start_name: &str,
+        end_name: &str,
+    ) -> Box<dyn ExactSizeIterator<Item = Iso8601Name> + '_> {
+        let result: Option<_> = try {
+            let start_pos = self.names.iter().position(|x| x.0 == start_name)?;
+            let end_pos = self.names.iter().rposition(|x| x.0 == end_name)?;
+            let length = end_pos - start_pos + 1;
+            let iter = self
+                .names
+                .iter()
+                .skip(start_pos)
+                .take(length)
+                .map(|x| x.0.clone());
+            Box::new(iter) as Box<dyn ExactSizeIterator<Item = Iso8601Name>>
+        };
+        result.unwrap_or_else(|| Box::new(iter::empty()))
     }
 }

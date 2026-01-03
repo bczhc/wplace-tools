@@ -6,11 +6,11 @@
 //! Magic (11B) | Version (u16) | IndexPos (u64) | EntryCount (u32) | Metadata | Diff Data | Sorted Index Entries...
 
 use crate::ChunkNumber;
-use byteorder::{LE, ReadBytesExt, WriteBytesExt};
+use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufReader, Read, Seek, SeekFrom, Take, Write};
 use std::path::Path;
 use yeet_ops::yeet;
 
@@ -85,6 +85,11 @@ impl<R: Read + Seek> DiffFile<R> {
             entry_count,
             metadata,
         })
+    }
+
+    pub fn open_chunk(&mut self, entry: &IndexEntry) -> io::Result<Take<&mut R>> {
+        self.reader.seek(SeekFrom::Start(entry.pos))?;
+        Ok(self.reader.by_ref().take(entry.len))
     }
 
     /// Perform binary search on the fixed-length index area
