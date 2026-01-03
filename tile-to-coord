@@ -1,0 +1,21 @@
+#!/bin/env ruby
+
+def tile_to_lng_lat(tile_x, tile_y, tiles_per_side = 2048)
+x_norm = tile_x.to_f / tiles_per_side
+y_norm = tile_y.to_f / tiles_per_side
+
+lng = x_norm * 360 - 180
+
+lat_rad = Math.atan(Math.sinh(Math::PI * (1 - 2 * y_norm)))
+lat = lat_rad * 180 / Math::PI
+
+    [lng, lat]
+end
+
+if ARGV.length >= 2
+    coord = tile_to_lng_lat(ARGV[0], ARGV[1])
+
+puts "https://wplace.live/?lat=#{coord[1]}&lng=#{coord[0]}&zoom=15"
+else
+puts "Usage: ruby script.rb <tileX> <tileY>"
+end
