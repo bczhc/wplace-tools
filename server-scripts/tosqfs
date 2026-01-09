@@ -1,8 +1,0 @@
-#!/bin/bash
-
-[ $# -eq 0 ] && echo 'Usage: cmd <out.img>' && exit 1
-
-out="$1"
-[ -f "$out" ] && rm "$out"
-
-~/gensquashfs -c gzip -F squashfs-index "$out"
