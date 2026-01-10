@@ -3,6 +3,7 @@
 #![feature(try_blocks)]
 #![feature(decl_macro)]
 #![feature(likely_unlikely)]
+#![feature(mpmc_channel)]
 #![warn(clippy::all, clippy::nursery)]
 
 use anyhow::anyhow;
@@ -12,15 +13,16 @@ use log::{debug, info, warn};
 use rayon::prelude::*;
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
+use std::sync::mpmc::{sync_channel, Receiver, Sender};
+use std::thread::{spawn, JoinHandle};
 use std::{fs, hint};
-use threadpool::ThreadPool;
 use wplace_tools::indexed_png::{read_png_reader, write_png};
 use wplace_tools::tar::ChunksTarReader;
 use wplace_tools::{
-    CHUNK_DIMENSION, CHUNK_LENGTH, Canvas, ChunkNumber, ChunkProcessError, DiffFilesCollector,
-    DirDiffFilesCollector, ExitOnError, SqfsDiffFilesCollector, apply_chunk, diff3,
-    flate2_decompress, quick_capture, set_up_logger, stylized_progress_bar,
-    validate_chunk_checksum,
+    apply_chunk, diff3, flate2_decompress, quick_capture, set_up_logger, stylized_progress_bar,
+    validate_chunk_checksum, Canvas, ChunkNumber, ChunkProcessError, DiffFilesCollector,
+    DirDiffFilesCollector, ExitOnError, SqfsDiffFilesCollector, CHUNK_DIMENSION,
+    CHUNK_LENGTH,
 };
 use yeet_ops::yeet;
 
@@ -98,7 +100,7 @@ fn main() -> anyhow::Result<()> {
     info!("Retrieving...");
     let pb = stylized_progress_bar((apply_list_len * chunks.len()) as u64);
 
-    let image_saver = ImageSaverPool::new()?;
+    let image_saver = ImageSaver::new();
 
     // Retrieve chunk from the initial tarball for later processes on it.
     let mut chunks_buf = chunks
@@ -181,7 +183,7 @@ fn main() -> anyhow::Result<()> {
     }
     pb.finish();
     info!("Waiting for image saver...");
-    image_saver.join();
+    image_saver.finish_and_join();
 
     Ok(())
 }
@@ -240,26 +242,45 @@ fn retrieve_tar_chunk(
     Ok(buf)
 }
 
-struct ImageSaverPool {
-    pool: ThreadPool,
+type WrappedTask = Box<dyn FnOnce() + Send>;
+struct ImageSaver {
+    task_tx: Sender<WrappedTask>,
+    finish_handles: Vec<JoinHandle<()>>,
 }
 
-impl ImageSaverPool {
-    fn new() -> anyhow::Result<Self> {
-        Ok(Self {
-            pool: ThreadPool::new(num_cpus::get()),
-        })
+impl ImageSaver {
+    fn new() -> Self {
+        let cpu_count = num_cpus::get();
+        let (tx, rx) = sync_channel(cpu_count / 2);
+
+        let mut handles = Vec::new();
+        for _ in 0..cpu_count {
+            let thread_rx: Receiver<WrappedTask> = Receiver::clone(&rx);
+            handles.push(spawn(move || {
+                for x in thread_rx {
+                    x();
+                }
+            }));
+        }
+        Self {
+            task_tx: tx,
+            finish_handles: handles,
+        }
     }
 
     fn submit(&self, path: impl AsRef<Path> + Send + 'static, dimension: (u32, u32), buf: Vec<u8>) {
-        self.pool.execute(move || {
+        let task = move || {
             let path = path;
             write_png(&path, dimension, &buf).exit_on_error();
             debug!("Saved: {}", path.as_ref().display());
-        });
+        };
+        self.task_tx.send(Box::new(task)).unwrap();
     }
 
-    fn join(self) {
-        self.pool.join();
+    fn finish_and_join(self) {
+        drop(self.task_tx);
+        for x in self.finish_handles {
+            x.join().unwrap();
+        }
     }
 }
