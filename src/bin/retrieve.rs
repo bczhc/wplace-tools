@@ -64,6 +64,10 @@ struct Args {
     /// Stitch chunks together to a big image.
     #[arg(short, long)]
     stitch: bool,
+
+    /// Only save the stitched images. This implies `--stitch`.
+    #[arg(long)]
+    only_stitched: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -114,7 +118,7 @@ fn main() -> anyhow::Result<()> {
     // sequentially apply .diff files
     for (idx, name) in apply_list.enumerate() {
         let is_last_snapshot = idx == apply_list_len - 1;
-        let stitch_canvas = match args.stitch {
+        let stitch_canvas = match args.stitch | args.only_stitched {
             true => Some(Canvas::from_chunk_list(chunks_buf.iter().map(|x| x.0))),
             false => None,
         };
@@ -124,7 +128,6 @@ fn main() -> anyhow::Result<()> {
             pb.inc(1);
             let result: anyhow::Result<()> = try {
                 let chunk_out = args.out.join(format!("{}-{}", n.0, n.1));
-                fs::create_dir_all(&chunk_out)?;
 
                 let mut diff_data = vec![0_u8; CHUNK_LENGTH];
                 let mut diff_file = diff3::DiffFile::open(diff_source.reader(&name)?)?;
@@ -152,7 +155,9 @@ fn main() -> anyhow::Result<()> {
 
                 let img_path = chunk_out.join(format!("{name}.png"));
                 if args.all || is_last_snapshot {
-                    image_saver.submit(img_path, CHUNK_DIMENSION, chunk_buf.clone());
+                    if !args.only_stitched {
+                        image_saver.submit(img_path, CHUNK_DIMENSION, chunk_buf.clone());
+                    }
                 }
             };
             result
@@ -166,7 +171,6 @@ fn main() -> anyhow::Result<()> {
         // save the stitched image
         if let Some(mut c) = stitch_canvas {
             let stitch_out = args.out.join("stitched");
-            fs::create_dir_all(&stitch_out)?;
 
             if args.all || is_last_snapshot {
                 for x in &chunks_buf {
@@ -270,9 +274,11 @@ impl ImageSaver {
 
     fn submit(&self, path: impl AsRef<Path> + Send + 'static, dimension: (u32, u32), buf: Vec<u8>) {
         let task = move || {
-            let path = path;
+            let path = path.as_ref();
+            fs::create_dir_all(path.parent().expect("Can't get parent path"))
+                .expect("Can't create folder");
             write_png(&path, dimension, &buf).exit_on_error();
-            debug!("Saved: {}", path.as_ref().display());
+            debug!("Saved: {}", path.display());
         };
         self.task_tx.send(Box::new(task)).unwrap();
     }
