@@ -35,45 +35,43 @@ pub fn initialize_palette_lookup_table() {
     unsafe { PALETTE_LOOKUP_TABLE = Some(Vec::leak(create_palette_lookup_table())) }
 }
 
-/// Map indices in an indexed PNG -> indices in the global [GLOBAL_PALETTE]
-pub struct PixelMapper<
-    // Use fixed array here to eliminate heap allocations
-    const MAX_COLORS: usize = 64,
-> {
-    /// Raw palette format: \[r0, g0, b0, r1, g1, b1, ...\]<br/>
-    /// Grouped png_palette format: \[\[r0, g0, b0\], \[r1, g1, b1\], ...\]
-    png_palette: [[u8; 3]; MAX_COLORS],
-    /// See: https://www.w3.org/TR/PNG-DataRep.html#DR.Alpha-channel
-    trns: [u8; MAX_COLORS],
-    palette_lookup_table: &'static [u8],
+/// Maps indices from a local PNG palette to the global Wplace palette.
+///
+/// This optimized version pre-computes all possible 8-bit mappings during
+/// construction to ensure O(1) access with perfect cache locality.
+///
+/// This optimized version is created by Gemini.
+pub struct PixelMapper<const MAX_COLORS: usize = 64> {
+    /// A pre-computed mapping for every possible u8 index (0-255).
+    /// This fits entirely in the CPU L1 cache, avoiding the 16MB LUT
+    /// and RGB packing overhead during pixel iteration.
+    fast_map: [u8; 256],
 }
 
 impl PixelMapper {
-    fn new(png_info: &Info) -> Self {
-        let raw_palette = png_info.palette.as_ref().expect("No palette");
+    /// Creates a new PixelMapper and pre-calculates the fast_map.
+    pub fn new(png_info: &Info) -> Self {
+        // 1. Extract the local palette from the PNG info [4]
+        let raw_palette = png_info.palette.as_ref().expect("No palette found in PNG");
         assert_eq!(raw_palette.len() % 3, 0);
         let color_count = raw_palette.len() / 3;
 
-        let mut png_palette = [Default::default(); 64];
+        let mut png_palette = [[0_u8; 3]; 64];
         let mut groups = raw_palette.chunks(3);
         for x in png_palette.iter_mut().take(color_count) {
             *x = groups.next().unwrap().try_into().unwrap();
         }
 
-        let mut expanded_trns = [0_u8; 64];
-        match png_info.trns.as_ref() {
-            None => {
-                // all colors in the raw palette are fully opaque
-                expanded_trns.fill(255);
-            }
-            Some(trns) => {
-                // If trns are not as long as raw_palette, expand it. The missing trns positions
-                // should all indicate a full opaque.
-                (&mut expanded_trns[..]).write_all(trns).unwrap();
-                expanded_trns[trns.len()..].fill(255);
-            }
-        };
+        // 2. Handle transparency (tRNS) mapping
+        // Alpha values: 0 = transparent, 255 = fully opaque.
+        let mut expanded_trns = [255_u8; 64];
+        if let Some(trns) = png_info.trns.as_ref() {
+            (&mut expanded_trns[..]).write_all(trns).unwrap();
+            // Remaining colors not specified in tRNS are opaque
+            expanded_trns[trns.len()..].fill(255);
+        }
 
+        // 3. Access the 16MB Global Palette Lookup Table (LUT)
         let lut = unsafe {
             #[allow(static_mut_refs)]
             if PALETTE_LOOKUP_TABLE.is_none() {
@@ -82,22 +80,36 @@ impl PixelMapper {
             PALETTE_LOOKUP_TABLE.unwrap()
         };
 
-        Self {
-            png_palette,
-            trns: expanded_trns,
-            palette_lookup_table: lut,
+        // 4. Pre-calculate all 256 possible mappings (LUT of LUT)
+        // This shifts the computation cost from the pixel loop to the initialization.
+        let mut fast_map = [0_u8; 256];
+        for i in 0..256 {
+            if i < color_count {
+                if expanded_trns[i] == 0 {
+                    // PNG transparency maps to Index 0 in the global palette
+                    fast_map[i] = 0;
+                } else {
+                    // Pack RGB and perform the expensive 16MB lookup only once per color
+                    let rgb = &png_palette[i];
+                    fast_map[i] = lut[pack_rgb(rgb) as usize];
+                }
+            } else {
+                // Default out-of-range indices to transparency
+                fast_map[i] = 0;
+            }
         }
+
+        Self { fast_map }
     }
 
+    /// Maps a local PNG palette index to a global palette index.
+    ///
+    /// Optimized for extreme performance by using a single array access.
+    /// This is significantly faster than the previous implementation which
+    /// performed bit-shifting and large memory lookups per pixel.
     #[inline(always)]
     pub fn map(&self, index: u8) -> u8 {
-        let index = index as usize;
-        if self.trns[index] == 0 {
-            // this pixel is a transparency!
-            // PALETTE[0] denotes a transparency
-            return 0;
-        }
-        self.palette_lookup_table[pack_rgb(&self.png_palette[index]) as usize]
+        self.fast_map[index as usize]
     }
 }
 
