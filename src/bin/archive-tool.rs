@@ -376,6 +376,9 @@ fn do_diff(
                     let present = new_fetcher.fetch((x, y), new_buf)?;
                     assert!(present);
                     let base_chunk_present = base_fetcher.fetch((x, y), base_buf)?;
+                    if !base_chunk_present {
+                        base_buf.fill(0);
+                    }
 
                     let checksum = chunk_checksum(&new_buf);
 
