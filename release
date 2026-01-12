@@ -2,7 +2,9 @@
 
 cargo build -r --target x86_64-unknown-linux-musl
 cargo build -r --target x86_64-pc-windows-gnu
+cargo build -r --target aarch64-linux-android
 
 cd target
 tar -C x86_64-unknown-linux-musl/release -c {retrieve,archive-tool} -Jf x86_64-unknown-linux-musl.tar.xz
 tar -C x86_64-pc-windows-gnu/release -c {retrieve,archive-tool}.exe -Jf x86_64-pc-windows-gnu.tar.xz
+tar -C aarch64-linux-android/release -c {retrieve,archive-tool} -Jf aarch64-linux-android.tar.xz
