@@ -63,8 +63,12 @@ mod cli {
             #[arg(value_name = "DIFF", value_hint = ValueHint::FilePath)]
             diff: PathBuf,
 
-            #[arg(value_name = "OUTPUT", value_hint = ValueHint::FilePath)]
-            output: PathBuf,
+            #[arg(value_name = "OUTPUT", value_hint = ValueHint::FilePath, required_unless_present("dry_run"))]
+            output: Option<PathBuf>,
+
+            /// Do not write anything to the disk.
+            #[arg(long)]
+            dry_run: bool,
         },
 
         /// Compare two archives. This is used to verify if a diff-apply pipeline works correctly.
@@ -164,7 +168,12 @@ fn main() -> anyhow::Result<()> {
 
             do_diff_for_directory(base, new, output)?;
         }
-        Commands::Apply { base, diff, output } => {
+        Commands::Apply {
+            base,
+            diff,
+            output,
+            dry_run,
+        } => {
             info!("Opening diff file...");
             let mut diff_file = diff3::DiffFile::open(File::open_buffered(&diff)?)?;
             let index = diff_file.collect_index()?;
@@ -204,8 +213,6 @@ fn main() -> anyhow::Result<()> {
                             let mut raw_diff = vec![0_u8; CHUNK_LENGTH];
                             decompressor.read_exact(&mut raw_diff)?;
 
-                            let output_file = new_chunk_file(&output, (chunk_x, chunk_y), "png");
-
                             let mut base_buf = vec![0_u8; CHUNK_LENGTH];
                             // if the base chunk is not present, the buffer will be just zeros
                             // - totally fine for the applying process.
@@ -217,7 +224,14 @@ fn main() -> anyhow::Result<()> {
                                     .expect("Raw diff data length is expected to be 1_000_000"),
                             );
                             validate_chunk_checksum(&base_buf, entry.checksum)?;
-                            write_chunk_png(&output_file, &base_buf)?;
+                            if !dry_run {
+                                let output_file = new_chunk_file(
+                                    output.as_ref().expect("Clap ensures this"),
+                                    (chunk_x, chunk_y),
+                                    "png",
+                                );
+                                write_chunk_png(&output_file, &base_buf)?;
+                            }
                             progress.inc(1);
                         }
                         false => {
@@ -248,8 +262,14 @@ fn main() -> anyhow::Result<()> {
                     assert!(!entry.is_changed());
                     let base_png_buf = base_fetcher.fetch_raw((chunk_x, chunk_y))?;
                     assert!(!base_png_buf.is_empty());
-                    let out_chunk_file = new_chunk_file(&output, (chunk_x, chunk_y), "png");
-                    File::create_buffered(out_chunk_file)?.write_all(&base_png_buf)?;
+                    if !dry_run {
+                        let out_chunk_file = new_chunk_file(
+                            output.as_ref().expect("Clap ensures this"),
+                            (chunk_x, chunk_y),
+                            "png",
+                        );
+                        File::create_buffered(out_chunk_file)?.write_all(&base_png_buf)?;
+                    }
                     progress.inc(1);
                 };
                 result.exit_on_error();
