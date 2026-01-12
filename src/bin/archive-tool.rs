@@ -20,7 +20,7 @@ use std::thread::spawn;
 use std::{fs, hint, io};
 use tempfile::NamedTempFile;
 use wplace_tools::checksum::chunk_checksum;
-use wplace_tools::indexed_png::{read_png, write_chunk_png};
+use wplace_tools::indexed_png::{read_png, read_png_reader, write_chunk_png};
 use wplace_tools::{
     apply_chunk, chunk_buf, collect_chunks, diff3, new_chunk_file, open_file_range,
     set_up_logger, stylized_progress_bar, validate_chunk_checksum, ChunkFetcher, ChunkProcessError, DirChunkFetcher,
@@ -66,9 +66,13 @@ mod cli {
             #[arg(value_name = "OUTPUT", value_hint = ValueHint::FilePath, required_unless_present("dry_run"))]
             output: Option<PathBuf>,
 
-            /// Do not write anything to the disk.
+            /// Do not write anything to the disk
             #[arg(long)]
             dry_run: bool,
+
+            /// Also do checksum check for unchanged chunks
+            #[arg(long, alias = "fc")]
+            full_checksum: bool,
         },
 
         /// Compare two archives. This is used to verify if a diff-apply pipeline works correctly.
@@ -173,6 +177,7 @@ fn main() -> anyhow::Result<()> {
             diff,
             output,
             dry_run,
+            full_checksum,
         } => {
             info!("Opening diff file...");
             let mut diff_file = diff3::DiffFile::open(File::open_buffered(&diff)?)?;
@@ -253,27 +258,34 @@ fn main() -> anyhow::Result<()> {
             info!("Copying unchanged chunks...");
             let progress = stylized_progress_bar(unchanged_chunks.len() as u64);
 
-            unchanged_chunks.into_iter().par_bridge().for_each(|x| {
-                let result: anyhow::Result<()> = try {
-                    let entry = x.1;
-                    let chunk_x = x.0.0;
-                    let chunk_y = x.0.1;
+            unchanged_chunks.into_iter().par_bridge().for_each_with(
+                chunk_buf!(),
+                |cksum_chunk_buf, x| {
+                    let result: anyhow::Result<()> = try {
+                        let entry = x.1;
+                        let chunk_x = x.0.0;
+                        let chunk_y = x.0.1;
 
-                    assert!(!entry.is_changed());
-                    let base_png_buf = base_fetcher.fetch_raw((chunk_x, chunk_y))?;
-                    assert!(!base_png_buf.is_empty());
-                    if !dry_run {
-                        let out_chunk_file = new_chunk_file(
-                            output.as_ref().expect("Clap ensures this"),
-                            (chunk_x, chunk_y),
-                            "png",
-                        );
-                        File::create_buffered(out_chunk_file)?.write_all(&base_png_buf)?;
-                    }
-                    progress.inc(1);
-                };
-                result.exit_on_error();
-            });
+                        assert!(!entry.is_changed());
+                        let base_png_buf = base_fetcher.fetch_raw((chunk_x, chunk_y))?;
+                        if full_checksum {
+                            read_png_reader(Cursor::new(&base_png_buf), cksum_chunk_buf)?;
+                            validate_chunk_checksum(cksum_chunk_buf, x.1.checksum)?;
+                        }
+                        assert!(!base_png_buf.is_empty());
+                        if !dry_run {
+                            let out_chunk_file = new_chunk_file(
+                                output.as_ref().expect("Clap ensures this"),
+                                (chunk_x, chunk_y),
+                                "png",
+                            );
+                            File::create_buffered(out_chunk_file)?.write_all(&base_png_buf)?;
+                        }
+                        progress.inc(1);
+                    };
+                    result.exit_on_error();
+                },
+            );
             progress.finish();
         }
         Commands::Compare { base, new } => {
