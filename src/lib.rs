@@ -634,3 +634,7 @@ impl DiffFilesCollector for SqfsDiffFilesCollector {
         Box::new(self.names.iter().map(|x| x.0))
     }
 }
+
+pub macro chunk_buf() {
+    vec![0_u8; CHUNK_LENGTH]
+}

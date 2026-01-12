@@ -7,7 +7,7 @@
 
 use crate::cli::Commands;
 use clap::Parser;
-use flate2::{Compression, write};
+use flate2::{write, Compression};
 use log::{debug, info};
 use rayon::prelude::*;
 use std::cell::RefCell;
@@ -22,9 +22,9 @@ use tempfile::NamedTempFile;
 use wplace_tools::checksum::chunk_checksum;
 use wplace_tools::indexed_png::{read_png, write_chunk_png};
 use wplace_tools::{
-    CHUNK_LENGTH, ChunkFetcher, ChunkProcessError, DirChunkFetcher, ExitOnError, MUTATION_MASK,
-    PALETTE_INDEX_MASK, TarChunkFetcher, apply_chunk, collect_chunks, diff3, new_chunk_file,
-    open_file_range, set_up_logger, stylized_progress_bar, validate_chunk_checksum,
+    apply_chunk, chunk_buf, collect_chunks, diff3, new_chunk_file, open_file_range,
+    set_up_logger, stylized_progress_bar, validate_chunk_checksum, ChunkFetcher, ChunkProcessError, DirChunkFetcher,
+    ExitOnError, TarChunkFetcher, CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK,
 };
 use yeet_ops::yeet;
 
@@ -369,30 +369,30 @@ fn do_diff(
     let progress = stylized_progress_bar(new_fetcher.chunks_len() as u64);
     spawn(move || {
         let chunks_iter = new_fetcher.chunks_iter();
-        chunks_iter.par_bridge().for_each_with(tx, |tx, (x, y)| {
-            let result: anyhow::Result<()> = try {
-                let mut base_buf = vec![0_u8; CHUNK_LENGTH];
-                let mut new_buf = vec![0_u8; CHUNK_LENGTH];
+        chunks_iter.par_bridge().for_each_with(
+            (tx, chunk_buf!(), chunk_buf!()),
+            |(tx, base_buf, new_buf), (x, y)| {
+                let result: anyhow::Result<()> = try {
+                    let present = new_fetcher.fetch((x, y), new_buf)?;
+                    assert!(present);
+                    let base_chunk_present = base_fetcher.fetch((x, y), base_buf)?;
 
-                let present = new_fetcher.fetch((x, y), &mut new_buf)?;
-                assert!(present);
-                let base_chunk_present = base_fetcher.fetch((x, y), &mut base_buf)?;
+                    let checksum = chunk_checksum(&new_buf);
 
-                let checksum = chunk_checksum(&new_buf);
-
-                // It's expecting that a large percent of the chunks are not mutated.
-                // Thus in this case, only computing diff for changed chunks can reduce the process time.
-                let compressed_diff = if !base_chunk_present || base_buf != new_buf {
-                    let compressed_diff = diff_png_compressed(&mut base_buf, &new_buf).unwrap();
-                    Some(compressed_diff)
-                } else {
-                    None
+                    // It's expecting that a large percent of the chunks are not mutated.
+                    // Thus in this case, only computing diff for changed chunks can reduce the process time.
+                    let compressed_diff = if !base_chunk_present || base_buf != new_buf {
+                        let compressed_diff = diff_png_compressed(base_buf, &new_buf).unwrap();
+                        Some(compressed_diff)
+                    } else {
+                        None
+                    };
+                    tx.send((x, y, compressed_diff, checksum)).unwrap();
+                    progress.inc(1);
                 };
-                tx.send((x, y, compressed_diff, checksum)).unwrap();
-                progress.inc(1);
-            };
-            result.exit_on_error();
-        });
+                result.exit_on_error();
+            },
+        );
         progress.finish();
     });
 
