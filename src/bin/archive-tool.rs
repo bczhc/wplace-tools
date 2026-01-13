@@ -22,7 +22,7 @@ use tempfile::NamedTempFile;
 use wplace_tools::checksum::chunk_checksum;
 use wplace_tools::indexed_png::{read_png, read_png_reader, write_chunk_png};
 use wplace_tools::{
-    apply_chunk, chunk_buf, collect_chunks, diff3, new_chunk_file, open_file_range,
+    apply_chunk, chunk_buf, collect_chunks, diff, new_chunk_file, open_file_range,
     set_up_logger, stylized_progress_bar, validate_chunk_checksum, ChunkFetcher, ChunkProcessError, DirChunkFetcher,
     ExitOnError, TarChunkFetcher, CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK,
 };
@@ -185,7 +185,7 @@ fn main() -> anyhow::Result<()> {
             full_checksum,
         } => {
             info!("Opening diff file...");
-            let mut diff_file = diff3::DiffFile::open(File::open_buffered(&diff)?)?;
+            let mut diff_file = diff::DiffFile::open(File::open_buffered(&diff)?)?;
             let index = diff_file.collect_index()?;
             // process them separately (with two separate progress bar)
             let changed_chunks = index
@@ -348,8 +348,8 @@ fn main() -> anyhow::Result<()> {
         }
 
         Commands::Show { diff } => {
-            let mut diff_file = diff3::DiffFile::open(File::open_buffered(&diff)?)?;
-            println!("Version: {}", diff3::VERSION);
+            let mut diff_file = diff::DiffFile::open(File::open_buffered(&diff)?)?;
+            println!("Version: {}", diff::VERSION);
             println!(
                 "Metadata: {}",
                 serde_json::to_string(&diff_file.metadata).unwrap()
@@ -363,7 +363,7 @@ fn main() -> anyhow::Result<()> {
         }
 
         Commands::Test { diff } => {
-            let mut reader = diff3::DiffFile::open(File::open_buffered(&diff)?)?;
+            let mut reader = diff::DiffFile::open(File::open_buffered(&diff)?)?;
             let index = reader.collect_index()?;
             assert_eq!(reader.entry_count as usize, index.len());
             let pb = stylized_progress_bar(index.len() as u64);
@@ -404,7 +404,7 @@ fn do_diff(
     let temp_file = NamedTempFile::new_in(output_dir)?;
     debug!("temp_file: {}", temp_file.as_ref().display());
     let output_file = File::create_buffered(temp_file.as_ref())?;
-    let mut diff_file = diff3::DiffFileWriter::create(output_file, diff3::Metadata::default())?;
+    let mut diff_file = diff::DiffFileWriter::create(output_file, diff::Metadata::default())?;
 
     let (tx, rx) = sync_channel(1024);
     info!("Processing {} files...", new_fetcher.chunks_len());

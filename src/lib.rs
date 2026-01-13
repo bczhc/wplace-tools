@@ -6,7 +6,7 @@
 #![warn(clippy::all, clippy::nursery)]
 
 pub mod checksum;
-pub mod diff3;
+pub mod diff;
 pub mod indexed_png;
 pub mod tar;
 pub mod zip;

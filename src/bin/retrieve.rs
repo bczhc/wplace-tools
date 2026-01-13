@@ -19,7 +19,7 @@ use std::{fs, hint};
 use wplace_tools::indexed_png::{read_png_reader, write_png};
 use wplace_tools::tar::ChunksTarReader;
 use wplace_tools::{
-    apply_chunk, diff3, flate2_decompress, quick_capture, set_up_logger, stylized_progress_bar,
+    apply_chunk, diff, flate2_decompress, quick_capture, set_up_logger, stylized_progress_bar,
     validate_chunk_checksum, Canvas, ChunkNumber, ChunkProcessError, DiffFilesCollector,
     DirDiffFilesCollector, ExitOnError, SqfsDiffFilesCollector, CHUNK_DIMENSION,
     CHUNK_LENGTH,
@@ -130,7 +130,7 @@ fn main() -> anyhow::Result<()> {
                 let chunk_out = args.out.join(format!("{}-{}", n.0, n.1));
 
                 let mut diff_data = vec![0_u8; CHUNK_LENGTH];
-                let mut diff_file = diff3::DiffFile::open(diff_source.reader(&name)?)?;
+                let mut diff_file = diff::DiffFile::open(diff_source.reader(&name)?)?;
                 let chunk_index = diff_file.query_chunk(*n)?;
 
                 let entry = match chunk_index {

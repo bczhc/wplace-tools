@@ -1,4 +1,4 @@
-//! Diff format 3.
+//! Diff format (version 3).
 //!
 //! Optimized for binary search with fixed-length index entries (24 bytes).
 //!
