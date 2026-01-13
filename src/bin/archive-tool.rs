@@ -205,54 +205,60 @@ fn main() -> anyhow::Result<()> {
             info!("Applying diff to {} chunks...", changed_chunks.len());
             let progress = stylized_progress_bar(changed_chunks.len() as u64);
 
-            changed_chunks.into_iter().par_bridge().for_each(|x| {
-                let result: anyhow::Result<()> = try {
-                    let chunk_x = x.0.0;
-                    let chunk_y = x.0.1;
-                    let entry = x.1;
+            changed_chunks.into_iter().par_bridge().for_each_with(
+                (chunk_buf!(), chunk_buf!()),
+                |(raw_diff, base_buf), x| {
+                    let result: anyhow::Result<()> = try {
+                        let chunk_x = x.0.0;
+                        let chunk_y = x.0.1;
+                        let entry = x.1;
 
-                    match entry.is_changed() {
-                        true => {
-                            let diff_reader = open_file_range(&diff, entry.pos, entry.len)?;
-                            let mut decompressor = flate2::read::DeflateDecoder::new(diff_reader);
-                            let mut raw_diff = vec![0_u8; CHUNK_LENGTH];
-                            decompressor.read_exact(&mut raw_diff)?;
+                        match entry.is_changed() {
+                            true => {
+                                let diff_reader = open_file_range(&diff, entry.pos, entry.len)?;
+                                let mut decompressor =
+                                    flate2::read::DeflateDecoder::new(diff_reader);
+                                decompressor.read_exact(raw_diff)?;
 
-                            let mut base_buf = vec![0_u8; CHUNK_LENGTH];
-                            // if the base chunk is not present, the buffer will be just zeros
-                            // - totally fine for the applying process.
-                            let _p = base_fetcher.fetch((chunk_x, chunk_y), &mut base_buf);
+                                // if the base chunk is not present, the buffer will be just zeros
+                                // - totally fine for the applying process.
+                                let base_present =
+                                    base_fetcher.fetch((chunk_x, chunk_y), base_buf)?;
+                                if !base_present {
+                                    base_buf.fill(0);
+                                }
 
-                            apply_chunk(
-                                &mut base_buf,
-                                <&[_; _]>::try_from(&raw_diff[..])
-                                    .expect("Raw diff data length is expected to be 1_000_000"),
-                            );
-                            validate_chunk_checksum(&base_buf, entry.checksum)?;
-                            if !dry_run {
-                                let output_file = new_chunk_file(
-                                    output.as_ref().expect("Clap ensures this"),
-                                    (chunk_x, chunk_y),
-                                    "png",
+                                apply_chunk(
+                                    base_buf,
+                                    <&[_; _]>::try_from(&raw_diff[..])
+                                        .expect("Raw diff data length is expected to be 1_000_000"),
                                 );
-                                write_chunk_png(&output_file, &base_buf)?;
+                                validate_chunk_checksum(&base_buf, entry.checksum)?;
+                                if !dry_run {
+                                    let output_file = new_chunk_file(
+                                        output.as_ref().expect("Clap ensures this"),
+                                        (chunk_x, chunk_y),
+                                        "png",
+                                    );
+                                    write_chunk_png(&output_file, &base_buf)?;
+                                }
+                                progress.inc(1);
                             }
-                            progress.inc(1);
+                            false => {
+                                // changed_chunks is filtered
+                                unreachable!()
+                            }
                         }
-                        false => {
-                            // changed_chunks is filtered
-                            unreachable!()
-                        }
-                    }
-                };
-                result
-                    .map_err(|e| ChunkProcessError {
-                        inner: e,
-                        chunk_number: *x.0,
-                        diff_file: None,
-                    })
-                    .exit_on_error();
-            });
+                    };
+                    result
+                        .map_err(|e| ChunkProcessError {
+                            inner: e,
+                            chunk_number: *x.0,
+                            diff_file: None,
+                        })
+                        .exit_on_error();
+                },
+            );
             progress.finish();
 
             info!("Copying unchanged chunks...");
