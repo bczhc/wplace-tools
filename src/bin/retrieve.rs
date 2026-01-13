@@ -18,12 +18,7 @@ use std::thread::{spawn, JoinHandle};
 use std::{fs, hint};
 use wplace_tools::indexed_png::{read_png_reader, write_png};
 use wplace_tools::tar::ChunksTarReader;
-use wplace_tools::{
-    apply_chunk, diff, flate2_decompress, quick_capture, set_up_logger, stylized_progress_bar,
-    validate_chunk_checksum, Canvas, ChunkNumber, ChunkProcessError, DiffFilesCollector,
-    DirDiffFilesCollector, ExitOnError, SqfsDiffFilesCollector, CHUNK_DIMENSION,
-    CHUNK_LENGTH,
-};
+use wplace_tools::{apply_chunk, diff, quick_capture, set_up_logger, stylized_progress_bar, validate_chunk_checksum, zstd_decompress, Canvas, ChunkNumber, ChunkProcessError, DiffFilesCollector, DirDiffFilesCollector, ExitOnError, SqfsDiffFilesCollector, CHUNK_DIMENSION, CHUNK_LENGTH};
 use yeet_ops::yeet;
 
 #[derive(clap::Parser)]
@@ -144,7 +139,7 @@ fn main() -> anyhow::Result<()> {
 
                 if hint::unlikely(entry.is_changed()) {
                     let portion_reader = diff_file.open_chunk(&entry)?;
-                    flate2_decompress(portion_reader, &mut diff_data)?;
+                    zstd_decompress(portion_reader, &mut diff_data)?;
                     apply_chunk(chunk_buf, <&[_; _]>::try_from(&diff_data[..]).unwrap());
                     if !args.disable_csum {
                         validate_chunk_checksum(chunk_buf, entry.checksum)?;

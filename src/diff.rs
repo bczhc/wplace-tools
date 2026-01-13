@@ -1,6 +1,4 @@
-//! Diff format (version 3).
-//!
-//! Optimized for binary search with fixed-length index entries (24 bytes).
+//! Diff file.
 //!
 //! ## Format
 //! Magic (11B) | Version (u16) | IndexPos (u64) | EntryCount (u32) | Metadata | Diff Data | Sorted Index Entries...
@@ -15,10 +13,10 @@ use std::path::Path;
 use yeet_ops::yeet;
 
 pub const MAGIC: [u8; 11] = *b"wplace-diff";
-pub const VERSION: u16 = 3;
+pub const VERSION: u16 = 4;
 pub const INDEX_ENTRY_SIZE: u64 = 24;
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize, Clone)]
 pub struct Metadata {}
 
 /// Fixed-size index entry (24 bytes)
@@ -169,9 +167,9 @@ pub struct DiffFileWriter<W: Write + Seek> {
 }
 
 impl<W: Write + Seek> DiffFileWriter<W> {
-    pub fn create(mut writer: W, metadata: Metadata) -> anyhow::Result<Self> {
+    pub fn create(mut writer: W, metadata: Metadata, version: u16) -> anyhow::Result<Self> {
         writer.write_all(&MAGIC)?;
-        writer.write_u16::<LE>(VERSION)?;
+        writer.write_u16::<LE>(version)?;
         writer.write_u64::<LE>(0)?; // IndexPos placeholder
         writer.write_u32::<LE>(0)?; // EntryCount placeholder
 

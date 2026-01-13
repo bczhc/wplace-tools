@@ -30,7 +30,7 @@ use std::io::{BufReader, Read, Seek, SeekFrom, Take};
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::sync::Arc;
-use std::{env, fmt, fs, hint, io, iter};
+use std::{env, fmt, fs, io, iter};
 use walkdir::WalkDir;
 use yeet_ops::yeet;
 
@@ -39,6 +39,7 @@ pub const CHUNK_LENGTH: usize = CHUNK_WIDTH * CHUNK_WIDTH;
 pub const CHUNK_DIMENSION: (u32, u32) = (CHUNK_WIDTH as u32, CHUNK_WIDTH as u32);
 pub const MUTATION_MASK: u8 = 0b0100_0000;
 pub const PALETTE_INDEX_MASK: u8 = 0b0011_1111;
+pub const DIFF_DATA_ZSTD_COMPRESSION_LEVEL: i32 = 7;
 
 pub type ChunkNumber = (u16, u16);
 
@@ -253,9 +254,8 @@ pub fn reader_range<R: Read + Seek>(mut reader: R, pos: u64, len: u64) -> io::Re
 }
 
 #[inline(always)]
-pub fn flate2_decompress(reader: impl Read, buf: &mut [u8]) -> io::Result<()> {
-    let mut read = flate2::read::DeflateDecoder::new(reader);
-    read.read_exact(buf)
+pub fn zstd_decompress(reader: impl Read, buf: &mut [u8]) -> io::Result<()> {
+    zstd::Decoder::new(reader)?.read_exact(buf)
 }
 
 #[inline(always)]

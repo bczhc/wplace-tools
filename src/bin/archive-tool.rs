@@ -7,7 +7,6 @@
 
 use crate::cli::Commands;
 use clap::Parser;
-use flate2::{write, Compression};
 use log::{debug, info};
 use rayon::prelude::*;
 use std::cell::RefCell;
@@ -21,11 +20,7 @@ use std::{fs, hint, io};
 use tempfile::NamedTempFile;
 use wplace_tools::checksum::chunk_checksum;
 use wplace_tools::indexed_png::{read_png, read_png_reader, write_chunk_png};
-use wplace_tools::{
-    apply_chunk, chunk_buf, collect_chunks, diff, new_chunk_file, open_file_range,
-    set_up_logger, stylized_progress_bar, validate_chunk_checksum, ChunkFetcher, ChunkProcessError, DirChunkFetcher,
-    ExitOnError, TarChunkFetcher, CHUNK_LENGTH, MUTATION_MASK, PALETTE_INDEX_MASK,
-};
+use wplace_tools::{apply_chunk, chunk_buf, collect_chunks, diff, new_chunk_file, open_file_range, set_up_logger, stylized_progress_bar, validate_chunk_checksum, zstd_decompress, ChunkFetcher, ChunkProcessError, DirChunkFetcher, ExitOnError, TarChunkFetcher, CHUNK_LENGTH, DIFF_DATA_ZSTD_COMPRESSION_LEVEL, MUTATION_MASK, PALETTE_INDEX_MASK};
 use yeet_ops::yeet;
 
 mod cli {
@@ -151,11 +146,7 @@ fn diff_chunk(base_buf: &mut [u8], new_buf: &[u8]) {
 #[inline(always)]
 fn diff_chunk_compressed(base_buf: &mut [u8], new_buf: &[u8]) -> anyhow::Result<Vec<u8>> {
     diff_chunk(base_buf, new_buf);
-
-    let mut compressor =
-        write::DeflateEncoder::new(Cursor::new(Vec::new()), Compression::default());
-    compressor.write_all(base_buf)?;
-    Ok(compressor.finish()?.into_inner())
+    Ok(zstd::encode_all(&mut (&base_buf[..]), DIFF_DATA_ZSTD_COMPRESSION_LEVEL)?)
 }
 
 thread_local! {
@@ -221,9 +212,7 @@ fn main() -> anyhow::Result<()> {
                         match entry.is_changed() {
                             true => {
                                 let diff_reader = open_file_range(&diff, entry.pos, entry.len)?;
-                                let mut decompressor =
-                                    flate2::read::DeflateDecoder::new(diff_reader);
-                                decompressor.read_exact(raw_diff)?;
+                                zstd_decompress(diff_reader, raw_diff)?;
 
                                 // if the base chunk is not present, the buffer will be just zeros
                                 // - totally fine for the applying process.
@@ -373,7 +362,8 @@ fn main() -> anyhow::Result<()> {
                         false => {}
                         true => {
                             let portion = open_file_range(&diff, e.pos, e.len)?;
-                            let mut decoder = flate2::read::DeflateDecoder::new(portion);
+
+                            let mut decoder = zstd::Decoder::new(portion)?;
                             io::copy(&mut decoder, &mut io::sink())?;
                         }
                     }
@@ -404,7 +394,7 @@ fn do_diff(
     let temp_file = NamedTempFile::new_in(output_dir)?;
     debug!("temp_file: {}", temp_file.as_ref().display());
     let output_file = File::create_buffered(temp_file.as_ref())?;
-    let mut diff_file = diff::DiffFileWriter::create(output_file, diff::Metadata::default())?;
+    let mut diff_file = diff::DiffFileWriter::create(output_file, diff::Metadata::default(), diff::VERSION)?;
 
     let (tx, rx) = sync_channel(1024);
     info!("Processing {} files...", new_fetcher.chunks_len());
