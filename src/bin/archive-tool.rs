@@ -134,18 +134,23 @@ fn compare_png(base: impl AsRef<Path>, new: impl AsRef<Path>) -> anyhow::Result<
     Ok(img1 == img2)
 }
 
+/// Diff the two buffer. New data will be written back to `base_buf`.
+#[inline(always)]
+fn diff_chunk(base_buf: &mut [u8], new_buf: &[u8]) {
+    for (b, &n) in base_buf.iter_mut().zip(new_buf) {
+        let i1 = *b & PALETTE_INDEX_MASK;
+        let i2 = n & PALETTE_INDEX_MASK;
+
+        let mutated = i2 | MUTATION_MASK;
+
+        *b = if i1 == i2 { 0 } else { mutated };
+    }
+}
+
 /// Returns compressed diff between two images.
 #[inline(always)]
-fn diff_png_compressed(base_buf: &mut [u8], new_buf: &[u8]) -> anyhow::Result<Vec<u8>> {
-    for x in base_buf.iter_mut().zip(new_buf) {
-        let i1 = *x.0 & PALETTE_INDEX_MASK;
-        let i2 = x.1 & PALETTE_INDEX_MASK;
-        if hint::likely(i1 == i2) {
-            *x.0 = 0;
-        } else {
-            *x.0 = i2 | MUTATION_MASK;
-        }
-    }
+fn diff_chunk_compressed(base_buf: &mut [u8], new_buf: &[u8]) -> anyhow::Result<Vec<u8>> {
+    diff_chunk(base_buf, new_buf);
 
     let mut compressor =
         write::DeflateEncoder::new(Cursor::new(Vec::new()), Compression::default());
@@ -423,7 +428,7 @@ fn do_diff(
                     // It's expecting that a large percent of the chunks are not mutated.
                     // Thus in this case, only computing diff for changed chunks can reduce the process time.
                     let compressed_diff = if !base_chunk_present || base_buf != new_buf {
-                        let compressed_diff = diff_png_compressed(base_buf, &new_buf).unwrap();
+                        let compressed_diff = diff_chunk_compressed(base_buf, &new_buf).unwrap();
                         Some(compressed_diff)
                     } else {
                         None
