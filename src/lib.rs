@@ -224,11 +224,15 @@ pub fn extract_datetime(s: impl AsRef<OsStr>) -> Option<Iso8601Name> {
 
 #[inline(always)]
 pub fn apply_chunk(base: &mut [u8], diff_data: &[u8; CHUNK_LENGTH]) {
-    for (base_pix, diff_pix) in base.iter_mut().zip(diff_data) {
-        if hint::unlikely(diff_pix & MUTATION_MASK == MUTATION_MASK) {
-            // has mutation flag - apply the pixel
-            *base_pix = diff_pix & PALETTE_INDEX_MASK;
-        }
+    for (base_pix, &diff_pix) in base.iter_mut().zip(diff_data.iter()) {
+        let old_val = *base_pix;
+        let new_val = diff_pix & PALETTE_INDEX_MASK;
+        // has mutation flag - apply the pixel
+        *base_pix = if (diff_pix & MUTATION_MASK) != 0 {
+            new_val
+        } else {
+            old_val
+        };
     }
 }
 
