@@ -34,6 +34,7 @@ use std::{env, fmt, fs, io, iter};
 use walkdir::WalkDir;
 use yeet_ops::yeet;
 
+pub const CHUNK_NUMBER_TOTAL: usize = 2048;
 pub const CHUNK_WIDTH: usize = 1000;
 pub const CHUNK_LENGTH: usize = CHUNK_WIDTH * CHUNK_WIDTH;
 pub const CHUNK_DIMENSION: (u32, u32) = (CHUNK_WIDTH as u32, CHUNK_WIDTH as u32);

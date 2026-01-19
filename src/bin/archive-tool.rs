@@ -5,22 +5,30 @@
 #![feature(try_blocks)]
 #![warn(clippy::all, clippy::nursery)]
 
-use crate::cli::Commands;
+use crate::cli::{ApplyCmd, Commands};
 use clap::Parser;
-use log::{debug, info};
+use log::{debug, error, info, warn};
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::exit;
 use std::sync::mpsc::sync_channel;
 use std::thread::spawn;
 use std::{fs, hint, io};
 use tempfile::NamedTempFile;
 use wplace_tools::checksum::chunk_checksum;
+use wplace_tools::diff::{DiffFile, IndexEntry};
 use wplace_tools::indexed_png::{read_png, read_png_reader, write_chunk_png};
-use wplace_tools::{apply_chunk, chunk_buf, collect_chunks, diff, new_chunk_file, open_file_range, set_up_logger, stylized_progress_bar, validate_chunk_checksum, zstd_decompress, ChunkFetcher, ChunkProcessError, DirChunkFetcher, ExitOnError, TarChunkFetcher, CHUNK_LENGTH, DIFF_DATA_ZSTD_COMPRESSION_LEVEL, MUTATION_MASK, PALETTE_INDEX_MASK};
+use wplace_tools::{
+    apply_chunk, chunk_buf, collect_chunks, diff, new_chunk_file,
+    open_file_range, set_up_logger, stylized_progress_bar, validate_chunk_checksum,
+    zstd_decompress, ChunkFetcher, ChunkNumber, ChunkProcessError, DirChunkFetcher, ExitOnError,
+    TarChunkFetcher, CHUNK_LENGTH, CHUNK_NUMBER_TOTAL, DIFF_DATA_ZSTD_COMPRESSION_LEVEL, MUTATION_MASK,
+    PALETTE_INDEX_MASK,
+};
 use yeet_ops::yeet;
 
 mod cli {
@@ -50,25 +58,8 @@ mod cli {
             output: PathBuf,
         },
 
-        /// Apply `diff` on `base`
-        Apply {
-            #[arg(value_name = "BASE", value_hint = ValueHint::FilePath)]
-            base: PathBuf,
-
-            #[arg(value_name = "DIFF", value_hint = ValueHint::FilePath)]
-            diff: PathBuf,
-
-            #[arg(value_name = "OUTPUT", value_hint = ValueHint::FilePath, required_unless_present("dry_run"))]
-            output: Option<PathBuf>,
-
-            /// Do not write anything to the disk
-            #[arg(long)]
-            dry_run: bool,
-
-            /// Also do checksum check for unchanged chunks
-            #[arg(long, alias = "fc")]
-            full_checksum: bool,
-        },
+        /// Apply diff files.
+        Apply(ApplyCmd),
 
         /// Compare two archives. This is used to verify if a diff-apply pipeline works correctly.
         Compare {
@@ -118,6 +109,29 @@ mod cli {
                 .and_then(|x| TilesRange::parse_str(x))
         }
     }
+
+    #[derive(Args, Debug)]
+    pub struct ApplyCmd {
+        /// Initial archive. Tarball/folder is supported.
+        #[arg(value_hint = clap::ValueHint::FilePath)]
+        pub initial: PathBuf,
+
+        /// Diff files to be applied.
+        #[arg(value_hint = clap::ValueHint::FilePath, num_args = 1.., required = true)]
+        pub diffs: Vec<PathBuf>,
+
+        /// The final produced snapshot path after all diffs being applied.
+        #[arg(value_hint = clap::ValueHint::FilePath, short, long)]
+        pub output: Option<PathBuf>,
+
+        /// Add this flag when `output` is not specified.
+        #[arg(long)]
+        pub dry_run: bool,
+
+        /// Disable checksum validation.
+        #[arg(long)]
+        pub no_checksum: bool,
+    }
 }
 
 #[inline(always)]
@@ -146,7 +160,10 @@ fn diff_chunk(base_buf: &mut [u8], new_buf: &[u8]) {
 #[inline(always)]
 fn diff_chunk_compressed(base_buf: &mut [u8], new_buf: &[u8]) -> anyhow::Result<Vec<u8>> {
     diff_chunk(base_buf, new_buf);
-    Ok(zstd::encode_all(&mut (&base_buf[..]), DIFF_DATA_ZSTD_COMPRESSION_LEVEL)?)
+    Ok(zstd::encode_all(
+        &mut (&base_buf[..]),
+        DIFF_DATA_ZSTD_COMPRESSION_LEVEL,
+    )?)
 }
 
 thread_local! {
@@ -168,126 +185,11 @@ fn main() -> anyhow::Result<()> {
 
             do_diff_for_directory(base, new, output)?;
         }
-        Commands::Apply {
-            base,
-            diff,
-            output,
-            dry_run,
-            full_checksum,
-        } => {
-            info!("Opening diff file...");
-            let mut diff_file = diff::DiffFile::open(File::open_buffered(&diff)?)?;
-            let index = diff_file.collect_index()?;
-            // process them separately (with two separate progress bar)
-            let changed_chunks = index
-                .iter()
-                .filter(|x| x.1.is_changed())
-                .collect::<Vec<_>>();
-            let unchanged_chunks = index
-                .iter()
-                .filter(|x| !x.1.is_changed())
-                .collect::<Vec<_>>();
 
-            let base_fetcher: Box<dyn ChunkFetcher + Send + Sync + 'static> =
-                if base.extension().map(|x| x.to_ascii_lowercase()) == Some("tar".into()) {
-                    info!("Reading base tarball...");
-                    Box::new(TarChunkFetcher::new(&base)?)
-                } else if base.is_dir() {
-                    Box::new(DirChunkFetcher::new(&base, false)?)
-                } else {
-                    yeet!(anyhow::anyhow!("Unknown 'base' file type"))
-                };
-
-            info!("Applying diff to {} chunks...", changed_chunks.len());
-            let progress = stylized_progress_bar(changed_chunks.len() as u64);
-
-            changed_chunks.into_iter().par_bridge().for_each_with(
-                (chunk_buf!(), chunk_buf!()),
-                |(raw_diff, base_buf), x| {
-                    let result: anyhow::Result<()> = try {
-                        let chunk_x = x.0.0;
-                        let chunk_y = x.0.1;
-                        let entry = x.1;
-
-                        match entry.is_changed() {
-                            true => {
-                                let diff_reader = open_file_range(&diff, entry.pos, entry.len)?;
-                                zstd_decompress(diff_reader, raw_diff)?;
-
-                                // if the base chunk is not present, the buffer will be just zeros
-                                // - totally fine for the applying process.
-                                let base_present =
-                                    base_fetcher.fetch((chunk_x, chunk_y), base_buf)?;
-                                if !base_present {
-                                    base_buf.fill(0);
-                                }
-
-                                apply_chunk(
-                                    base_buf,
-                                    <&[_; _]>::try_from(&raw_diff[..])
-                                        .expect("Raw diff data length is expected to be 1_000_000"),
-                                );
-                                validate_chunk_checksum(&base_buf, entry.checksum)?;
-                                if !dry_run {
-                                    let output_file = new_chunk_file(
-                                        output.as_ref().expect("Clap ensures this"),
-                                        (chunk_x, chunk_y),
-                                        "png",
-                                    );
-                                    write_chunk_png(&output_file, &base_buf)?;
-                                }
-                                progress.inc(1);
-                            }
-                            false => {
-                                // changed_chunks is filtered
-                                unreachable!()
-                            }
-                        }
-                    };
-                    result
-                        .map_err(|e| ChunkProcessError {
-                            inner: e,
-                            chunk_number: *x.0,
-                            diff_file: None,
-                        })
-                        .exit_on_error();
-                },
-            );
-            progress.finish();
-
-            info!("Copying unchanged chunks...");
-            let progress = stylized_progress_bar(unchanged_chunks.len() as u64);
-
-            unchanged_chunks.into_iter().par_bridge().for_each_with(
-                chunk_buf!(),
-                |cksum_chunk_buf, x| {
-                    let result: anyhow::Result<()> = try {
-                        let entry = x.1;
-                        let chunk_x = x.0.0;
-                        let chunk_y = x.0.1;
-
-                        assert!(!entry.is_changed());
-                        let base_png_buf = base_fetcher.fetch_raw((chunk_x, chunk_y))?;
-                        if full_checksum {
-                            read_png_reader(Cursor::new(&base_png_buf), cksum_chunk_buf)?;
-                            validate_chunk_checksum(cksum_chunk_buf, x.1.checksum)?;
-                        }
-                        assert!(!base_png_buf.is_empty());
-                        if !dry_run {
-                            let out_chunk_file = new_chunk_file(
-                                output.as_ref().expect("Clap ensures this"),
-                                (chunk_x, chunk_y),
-                                "png",
-                            );
-                            File::create_buffered(out_chunk_file)?.write_all(&base_png_buf)?;
-                        }
-                        progress.inc(1);
-                    };
-                    result.exit_on_error();
-                },
-            );
-            progress.finish();
+        Commands::Apply(cmd) => {
+            apply::main(cmd)?;
         }
+
         Commands::Compare { base, new } => {
             info!("Collecting files 'base'...");
             let mut base_collected = collect_chunks(&base, None)?;
@@ -316,6 +218,7 @@ fn main() -> anyhow::Result<()> {
             });
             progress.finish();
         }
+
         Commands::Filter {
             base,
             output,
@@ -394,7 +297,8 @@ fn do_diff(
     let temp_file = NamedTempFile::new_in(output_dir)?;
     debug!("temp_file: {}", temp_file.as_ref().display());
     let output_file = File::create_buffered(temp_file.as_ref())?;
-    let mut diff_file = diff::DiffFileWriter::create(output_file, diff::Metadata::default(), diff::VERSION)?;
+    let mut diff_file =
+        diff::DiffFileWriter::create(output_file, diff::Metadata::default(), diff::VERSION)?;
 
     let (tx, rx) = sync_channel(1024);
     info!("Processing {} files...", new_fetcher.chunks_len());
@@ -457,6 +361,307 @@ fn do_diff_for_tar(base: PathBuf, new: PathBuf, output: PathBuf) -> anyhow::Resu
 
     do_diff(base_tar, new_tar, output)?;
     Ok(())
+}
+
+mod apply {
+    use crate::cli::ApplyCmd;
+    use log::{error, info, warn};
+    use rayon::iter::{ParallelBridge, ParallelIterator};
+    use std::fs::File;
+    use std::io;
+    use std::io::{Cursor, Write};
+    use std::ops::Add;
+    use std::path::Path;
+    use std::process::exit;
+    use wplace_tools::diff::{DiffFile, IndexEntry};
+    use wplace_tools::indexed_png::{read_png_reader, write_chunk_png};
+    use wplace_tools::{
+        apply_chunk, chunk_buf, diff, new_chunk_file, open_file_range,
+        stylized_progress_bar, validate_chunk_checksum, zstd_decompress, ChunkFetcher, ChunkNumber, ChunkProcessError,
+        DirChunkFetcher, ExitOnError, TarChunkFetcher, CHUNK_NUMBER_TOTAL,
+    };
+    use yeet_ops::yeet;
+
+    const ARRAY_LEN: usize = CHUNK_NUMBER_TOTAL * CHUNK_NUMBER_TOTAL;
+    const ZSTD_LEVEL: i32 = 3;
+
+    #[inline(always)]
+    /// A simple transform from ChunkNumber(u16, u16) to the usize array index.
+    fn array_index(n: ChunkNumber) -> usize {
+        (n.0 as usize * CHUNK_NUMBER_TOTAL) + n.1 as usize
+    }
+
+    type DynFetcher = dyn ChunkFetcher + Send + Sync + 'static;
+
+    fn apply_1st_diff(
+        memory: Option<&mut [Option<Vec<u8>>]>,
+        base_fetcher: &DynFetcher,
+        diff: impl AsRef<Path>,
+        output: Option<&Path>,
+        no_checksum: bool,
+    ) -> anyhow::Result<()> {
+        let diff = diff.as_ref();
+
+        let mut diff_file = diff::DiffFile::open(File::open_buffered(&diff)?)?;
+        let index = diff_file.collect_index()?;
+        let changed_chunks = index
+            .iter()
+            .filter(|x| x.1.is_changed())
+            .collect::<Vec<_>>();
+        let unchanged_chunks = index
+            .iter()
+            .filter(|x| !x.1.is_changed())
+            .collect::<Vec<_>>();
+
+        let memory_ptr = memory.map(|x| x.as_mut_ptr() as usize);
+
+        macro cell_ptr($n:expr, $ptr:expr) {
+            unsafe { &mut *($ptr as *mut Option<Vec<u8>>).add(array_index($n)) }
+        }
+
+        let pb = stylized_progress_bar(changed_chunks.len() as u64);
+        changed_chunks.into_iter().par_bridge().for_each_with(
+            (chunk_buf!(), chunk_buf!()),
+            |(raw_diff, base_buf), x| {
+                let result: anyhow::Result<()> = try {
+                    let &n = x.0;
+                    let entry = x.1;
+
+                    let diff_reader = open_file_range(&diff, entry.pos, entry.len)?;
+                    zstd_decompress(diff_reader, raw_diff)?;
+
+                    // if the base chunk is not present, the buffer will be just zeros
+                    // - totally fine for the applying process.
+                    let base_present = base_fetcher.fetch(n, base_buf)?;
+                    if !base_present {
+                        base_buf.fill(0);
+                    }
+
+                    apply_chunk(
+                        base_buf,
+                        <&[_; _]>::try_from(&raw_diff[..])
+                            .expect("Raw diff data length is expected to be 1_000_000"),
+                    );
+
+                    if !no_checksum {
+                        validate_chunk_checksum(&base_buf, entry.checksum)?;
+                    }
+                    if let Some(p) = memory_ptr {
+                        let cell_ptr = cell_ptr!(n, p);
+                        *cell_ptr = Some(zstd::encode_all(&base_buf[..], ZSTD_LEVEL)?);
+                    }
+                    if let Some(output) = output {
+                        let chunk_png = new_chunk_file(output, n, "png");
+                        write_chunk_png(chunk_png, base_buf)?;
+                    }
+
+                    pb.inc(1);
+                };
+
+                result
+                    .map_err(|e| ChunkProcessError {
+                        inner: e,
+                        chunk_number: *x.0,
+                        diff_file: None,
+                    })
+                    .exit_on_error();
+            },
+        );
+        pb.finish();
+
+        info!("Processing unchanged chunks...");
+        let pb = stylized_progress_bar(unchanged_chunks.len() as u64);
+        unchanged_chunks.into_iter().par_bridge().for_each_with(
+            chunk_buf!(),
+            |buf, (&n, entry)| {
+                let png_raw = base_fetcher.fetch_raw(n).unwrap();
+
+                if !no_checksum {
+                    read_png_reader(Cursor::new(&png_raw), buf).unwrap();
+                    validate_chunk_checksum(&buf, entry.checksum).exit_on_error();
+                }
+                if let Some(p) = memory_ptr {
+                    let cell_ptr = cell_ptr!(n, p);
+                    *cell_ptr = Some(zstd::encode_all(&buf[..], ZSTD_LEVEL).unwrap());
+                }
+                if let Some(output) = output {
+                    let chunk_png = new_chunk_file(output, n, "png");
+                    io::copy(
+                        &mut (&png_raw[..]),
+                        &mut File::create_buffered(chunk_png).unwrap(),
+                    )
+                    .unwrap();
+                }
+
+                pb.inc(1);
+            },
+        );
+        pb.finish();
+
+        Ok(())
+    }
+
+    fn apply_non_1st_diff(
+        memory: &mut [Option<Vec<u8>>],
+        diff: impl AsRef<Path>,
+        output: Option<&Path>,
+        no_checksum: bool,
+    ) -> anyhow::Result<()> {
+        let diff_path = diff.as_ref();
+
+        let mut diff_file = DiffFile::open(File::open(diff_path)?)?;
+        let index = diff_file.collect_index()?;
+        let changed_entries: Vec<(ChunkNumber, IndexEntry)> = index
+            .iter()
+            .filter(|(_, e)| e.is_changed())
+            .map(|x| (*x.0, *x.1))
+            .collect();
+
+        let memory_ptr = memory.as_mut_ptr() as usize;
+
+        let decompress_to = |n: ChunkNumber, to: &mut [u8]| {
+            // SAFETY: Rayon ensures unique access to each entry during iteration,
+            // and we are accessing index 'idx' which is unique to ChunkNumber 'n'
+            let cell_ptr = unsafe {
+                let ptr = memory_ptr as *mut Option<Vec<u8>>;
+                &mut *ptr.add(array_index(n))
+            };
+
+            // Decompress existing base
+            if let Some(compressed_base) = cell_ptr.as_ref() {
+                zstd_decompress(Cursor::new(compressed_base), to).unwrap();
+            } else {
+                to.fill(0);
+            }
+            cell_ptr
+        };
+
+        let pb = stylized_progress_bar(changed_entries.len() as u64);
+        changed_entries.into_iter().par_bridge().for_each_with(
+            (chunk_buf!(), chunk_buf!()),
+            |(base_buf, diff_data_buf), (n, entry)| {
+                let cell_ptr = decompress_to(n, base_buf);
+
+                // Load and apply diff
+                let diff_reader = open_file_range(diff_path, entry.pos, entry.len).unwrap();
+                zstd_decompress(diff_reader, diff_data_buf).unwrap();
+
+                apply_chunk(base_buf, (&diff_data_buf[..]).try_into().unwrap());
+                if !no_checksum {
+                    validate_chunk_checksum(base_buf, entry.checksum).exit_on_error();
+                }
+
+                // Recompress and update memory
+                if let Some(buf) = &mut *cell_ptr {
+                    buf.clear();
+                    let mut encoder = zstd::Encoder::new(buf, ZSTD_LEVEL).unwrap();
+                    encoder.write_all(&base_buf).unwrap();
+                    encoder.finish().unwrap();
+                } else {
+                    let re_compressed = zstd::encode_all(&base_buf[..], ZSTD_LEVEL).unwrap();
+                    *cell_ptr = Some(re_compressed);
+                }
+                pb.inc(1);
+            },
+        );
+        pb.finish();
+
+        if let Some(output) = output {
+            info!("Writing to disk...");
+            let pb = stylized_progress_bar(index.len() as u64);
+            index
+                .into_iter()
+                .par_bridge()
+                .for_each_with(chunk_buf!(), |buf, (n, entry)| {
+                    let _cell_ptr = decompress_to(n, buf);
+                    write_chunk_png(new_chunk_file(output, n, "png"), buf).unwrap();
+                    if !no_checksum {
+                        validate_chunk_checksum(buf, entry.checksum).exit_on_error();
+                    }
+                    pb.inc(1);
+                });
+            pb.finish();
+        }
+
+        Ok(())
+    }
+
+    pub fn main(mut args: ApplyCmd) -> anyhow::Result<()> {
+        if !args.dry_run && args.output.is_none() {
+            warn!(
+                "`--output` is missed? Please add `--dry-run` when you intend to ignore the output."
+            );
+            exit(1);
+        }
+        if args.dry_run {
+            args.output = None;
+        }
+
+        let base_fetcher: Box<DynFetcher> =
+            if args.initial.extension().map(|x| x.to_ascii_lowercase()) == Some("tar".into()) {
+                info!("Reading base tarball...");
+                Box::new(TarChunkFetcher::new(&args.initial)?)
+            } else if args.initial.is_dir() {
+                Box::new(DirChunkFetcher::new(&args.initial, false)?)
+            } else {
+                yeet!(anyhow::anyhow!("Unknown 'base' file type"))
+            };
+        assert!(args.diffs.len() >= 1, "Clap ensures");
+
+        let diff_total = args.diffs.len();
+        let print_log = |i: usize, path: &Path| {
+            info!(
+                "Applying diff [{}/{}]: {}...",
+                i,
+                diff_total,
+                path.display()
+            );
+        };
+
+        if args.diffs.len() == 1 {
+            print_log(1, &args.diffs[0]);
+            // There's only one diff to be applied. No need to write to an intermediate memory.
+            apply_1st_diff(
+                None,
+                &*base_fetcher,
+                &args.diffs[0],
+                args.output.as_ref().map(|x| x.as_path()),
+                args.no_checksum,
+            )?;
+            return Ok(());
+        }
+
+        // Buffer to store all the (intermediate) processed data
+        let mut memory_store: Vec<Option<Vec<u8>>> = (0..ARRAY_LEN).map(|_| None).collect();
+
+        let first = &args.diffs[0];
+        let last = &args.diffs[args.diffs.len() - 1];
+        let intermediates = &args.diffs[1..(args.diffs.len() - 1)];
+        print_log(1, first);
+        apply_1st_diff(
+            Some(&mut memory_store),
+            &*base_fetcher,
+            first,
+            None,
+            args.no_checksum,
+        )?;
+
+        for (diff_i, diff_path) in intermediates.iter().enumerate() {
+            print_log(diff_i + 1 + 1, diff_path);
+            apply_non_1st_diff(&mut memory_store, diff_path, None, args.no_checksum)?;
+        }
+
+        print_log(diff_total, last);
+        apply_non_1st_diff(
+            &mut memory_store,
+            last,
+            args.output.as_ref().map(|x| x.as_path()),
+            args.no_checksum,
+        )?;
+
+        info!("Done.");
+        Ok(())
+    }
 }
 
 #[test]
