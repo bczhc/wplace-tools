@@ -474,26 +474,29 @@ mod apply {
         unchanged_chunks.into_iter().par_bridge().for_each_with(
             chunk_buf!(),
             |buf, (&n, entry)| {
-                let png_raw = base_fetcher.fetch_raw(n).unwrap();
+                let result: anyhow::Result<()> = try {
+                    let png_raw = base_fetcher.fetch_raw(n)?;
 
-                if !no_checksum {
-                    read_png_reader(Cursor::new(&png_raw), buf).unwrap();
-                    validate_chunk_checksum(&buf, entry.checksum).exit_on_error();
-                }
-                if let Some(p) = memory_ptr {
-                    let cell_ptr = cell_ptr!(n, p);
-                    *cell_ptr = Some(zstd::encode_all(&buf[..], ZSTD_LEVEL).unwrap());
-                }
-                if let Some(output) = output {
-                    let chunk_png = new_chunk_file(output, n, "png");
-                    io::copy(
-                        &mut (&png_raw[..]),
-                        &mut File::create_buffered(chunk_png).unwrap(),
-                    )
-                    .unwrap();
-                }
+                    if !no_checksum {
+                        read_png_reader(Cursor::new(&png_raw), buf)?;
+                        validate_chunk_checksum(&buf, entry.checksum).exit_on_error();
+                    }
+                    if let Some(p) = memory_ptr {
+                        let cell_ptr = cell_ptr!(n, p);
+                        *cell_ptr = Some(zstd::encode_all(&buf[..], ZSTD_LEVEL)?);
+                    }
+                    if let Some(output) = output {
+                        let chunk_png = new_chunk_file(output, n, "png");
+                        io::copy(
+                            &mut (&png_raw[..]),
+                            &mut File::create_buffered(chunk_png)?,
+                        )
+                            ?;
+                    }
 
-                pb.inc(1);
+                    pb.inc(1);
+                };
+                result.exit_on_error();
             },
         );
         pb.finish();
@@ -540,28 +543,31 @@ mod apply {
         changed_entries.into_iter().par_bridge().for_each_with(
             (chunk_buf!(), chunk_buf!()),
             |(base_buf, diff_data_buf), (n, entry)| {
-                let cell_ptr = decompress_to(n, base_buf);
+                let result: anyhow::Result<()> = try {
+                    let cell_ptr = decompress_to(n, base_buf);
 
-                // Load and apply diff
-                let diff_reader = open_file_range(diff_path, entry.pos, entry.len).unwrap();
-                zstd_decompress(diff_reader, diff_data_buf).unwrap();
+                    // Load and apply diff
+                    let diff_reader = open_file_range(diff_path, entry.pos, entry.len)?;
+                    zstd_decompress(diff_reader, diff_data_buf)?;
 
-                apply_chunk(base_buf, (&diff_data_buf[..]).try_into().unwrap());
-                if !no_checksum {
-                    validate_chunk_checksum(base_buf, entry.checksum).exit_on_error();
-                }
+                    apply_chunk(base_buf, (&diff_data_buf[..]).try_into().unwrap());
+                    if !no_checksum {
+                        validate_chunk_checksum(base_buf, entry.checksum).exit_on_error();
+                    }
 
-                // Recompress and update memory
-                if let Some(buf) = &mut *cell_ptr {
-                    buf.clear();
-                    let mut encoder = zstd::Encoder::new(buf, ZSTD_LEVEL).unwrap();
-                    encoder.write_all(&base_buf).unwrap();
-                    encoder.finish().unwrap();
-                } else {
-                    let re_compressed = zstd::encode_all(&base_buf[..], ZSTD_LEVEL).unwrap();
-                    *cell_ptr = Some(re_compressed);
-                }
-                pb.inc(1);
+                    // Recompress and update memory
+                    if let Some(buf) = &mut *cell_ptr {
+                        buf.clear();
+                        let mut encoder = zstd::Encoder::new(buf, ZSTD_LEVEL)?;
+                        encoder.write_all(&base_buf)?;
+                        encoder.finish()?;
+                    } else {
+                        let re_compressed = zstd::encode_all(&base_buf[..], ZSTD_LEVEL)?;
+                        *cell_ptr = Some(re_compressed);
+                    }
+                    pb.inc(1);
+                };
+                result.exit_on_error();
             },
         );
         pb.finish();
