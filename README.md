@@ -41,7 +41,7 @@ File `diff.bin` saves all the changes from archive (1) to (2).
 
 ## Applying diff data
 
-Reconstruct the snapshot from its parent and a `.diff` file:
+Reconstruct the snapshot from its parent and the diff file.
 
 ```shell
 parent='2025-09-21T06-32-28.284Z+3h2m'
@@ -51,7 +51,7 @@ archive='2025-09-21T09-35-13.789Z+2h49m'
 rm -rf "$archive"
 
 # then restore it
-archive-tool apply "$parent" diff.bin "$archive"
+archive-tool apply "$parent" diff.bin -o "$archive"
 ```
 
 Archive `2025-09-21T09-35-13.789Z+2h49m` will be restored.
