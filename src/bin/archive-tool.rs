@@ -20,9 +20,9 @@ use tempfile::NamedTempFile;
 use wplace_tools::checksum::chunk_checksum;
 use wplace_tools::indexed_png::read_png;
 use wplace_tools::{
-    CHUNK_LENGTH, ChunkFetcher, DIFF_DATA_ZSTD_COMPRESSION_LEVEL, DirChunkFetcher, ExitOnError,
-    MUTATION_MASK, PALETTE_INDEX_MASK, TarChunkFetcher, chunk_buf, collect_chunks, diff,
-    new_chunk_file, open_file_range, set_up_logger, stylized_progress_bar,
+    chunk_buf, collect_chunks, diff, new_chunk_file, open_file_range,
+    set_up_logger, stylized_progress_bar, ChunkFetcher, DirChunkFetcher, ExitOnError, TarChunkFetcher,
+    CHUNK_LENGTH, DIFF_DATA_ZSTD_COMPRESSION_LEVEL, MUTATION_MASK, PALETTE_INDEX_MASK,
 };
 
 mod cli {
@@ -369,9 +369,10 @@ mod apply {
     use wplace_tools::diff::{DiffFile, IndexEntry};
     use wplace_tools::indexed_png::{read_png_reader, write_chunk_png};
     use wplace_tools::{
-        CHUNK_NUMBER_TOTAL, ChunkFetcher, ChunkNumber, ChunkProcessError, DirChunkFetcher,
-        ExitOnError, TarChunkFetcher, apply_chunk, chunk_buf, diff, new_chunk_file,
-        open_file_range, stylized_progress_bar, validate_chunk_checksum, zstd_decompress,
+        apply_chunk, chunk_buf, diff, new_chunk_file, open_file_range,
+        stylized_progress_bar, validate_chunk_checksum, zstd_decompress, AnyhowErrorExt, ChunkFetcher, ChunkNumber,
+        ChunkProcessError, DirChunkFetcher, ExitOnError, TarChunkFetcher,
+        CHUNK_NUMBER_TOTAL,
     };
     use yeet_ops::yeet;
 
@@ -451,13 +452,7 @@ mod apply {
                     pb.inc(1);
                 };
 
-                result
-                    .map_err(|e| ChunkProcessError {
-                        inner: e,
-                        chunk_number: *x.0,
-                        diff_file: None,
-                    })
-                    .exit_on_error();
+                result.exit_with_chunk_context(*x.0, Some(diff));
             },
         );
         pb.finish();
@@ -472,7 +467,7 @@ mod apply {
 
                     if !no_checksum {
                         read_png_reader(Cursor::new(&png_raw), buf)?;
-                        validate_chunk_checksum(buf, entry.checksum).exit_on_error();
+                        validate_chunk_checksum(buf, entry.checksum)?;
                     }
                     if let Some(p) = memory_ptr {
                         let cell_ptr = cell_ptr!(n, p);
@@ -485,7 +480,7 @@ mod apply {
 
                     pb.inc(1);
                 };
-                result.exit_on_error();
+                result.exit_with_chunk_context(n, Some(diff));
             },
         );
         pb.finish();
@@ -541,7 +536,7 @@ mod apply {
 
                     apply_chunk(base_buf, (&diff_data_buf[..]).try_into().unwrap());
                     if !no_checksum {
-                        validate_chunk_checksum(base_buf, entry.checksum).exit_on_error();
+                        validate_chunk_checksum(base_buf, entry.checksum)?;
                     }
 
                     // Recompress and update memory
@@ -556,7 +551,7 @@ mod apply {
                     }
                     pb.inc(1);
                 };
-                result.exit_on_error();
+                result.exit_with_chunk_context(n, Some(diff_path));
             },
         );
         pb.finish();
@@ -568,12 +563,15 @@ mod apply {
                 .into_iter()
                 .par_bridge()
                 .for_each_with(chunk_buf!(), |buf, (n, entry)| {
-                    let _cell_ptr = decompress_to(n, buf);
-                    write_chunk_png(new_chunk_file(output, n, "png"), buf).unwrap();
-                    if !no_checksum {
-                        validate_chunk_checksum(buf, entry.checksum).exit_on_error();
-                    }
-                    pb.inc(1);
+                    let result: anyhow::Result<()> = try {
+                        let _cell_ptr = decompress_to(n, buf);
+                        write_chunk_png(new_chunk_file(output, n, "png"), buf)?;
+                        if !no_checksum {
+                            validate_chunk_checksum(buf, entry.checksum)?;
+                        }
+                        pb.inc(1);
+                    };
+                    result.exit_with_chunk_context(n, Some(diff_path));
                 });
             pb.finish();
         }

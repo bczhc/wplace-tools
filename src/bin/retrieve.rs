@@ -18,11 +18,7 @@ use std::thread::{JoinHandle, spawn};
 use std::{fs, hint};
 use wplace_tools::indexed_png::{read_png_reader, write_png};
 use wplace_tools::tar::ChunksTarReader;
-use wplace_tools::{
-    CHUNK_DIMENSION, CHUNK_LENGTH, Canvas, ChunkNumber, ChunkProcessError, DiffFilesCollector,
-    DirDiffFilesCollector, ExitOnError, SqfsDiffFilesCollector, apply_chunk, diff, quick_capture,
-    set_up_logger, stylized_progress_bar, validate_chunk_checksum, zstd_decompress,
-};
+use wplace_tools::{CHUNK_DIMENSION, CHUNK_LENGTH, Canvas, ChunkNumber, ChunkProcessError, DiffFilesCollector, DirDiffFilesCollector, ExitOnError, SqfsDiffFilesCollector, apply_chunk, diff, quick_capture, set_up_logger, stylized_progress_bar, validate_chunk_checksum, zstd_decompress, AnyhowErrorExt};
 use yeet_ops::yeet;
 
 #[derive(clap::Parser)]
@@ -157,13 +153,7 @@ fn main() -> anyhow::Result<()> {
                     image_saver.submit(img_path, CHUNK_DIMENSION, chunk_buf.clone());
                 }
             };
-            result
-                .map_err(|e| ChunkProcessError {
-                    inner: e,
-                    chunk_number: *n,
-                    diff_file: Some(name.clone()),
-                })
-                .exit_on_error();
+            result.exit_with_chunk_context(*n, Some(format!("Datetime name: {}", name)));
         });
         // save the stitched image
         if let Some(mut c) = stitch_canvas {

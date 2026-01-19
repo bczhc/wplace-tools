@@ -299,6 +299,21 @@ where
     }
 }
 
+pub trait AnyhowErrorExt<T> {
+    fn exit_with_chunk_context(self, n: ChunkNumber, diff_file: Option<impl AsRef<Path>>) -> T;
+}
+
+impl<T> AnyhowErrorExt<T> for anyhow::Result<T> {
+    #[inline(always)]
+    fn exit_with_chunk_context(self, n: ChunkNumber, diff_file: Option<impl AsRef<Path>>) -> T {
+        self.map_err(|e| ChunkProcessError {
+            inner: e,
+            chunk_number: n,
+            diff_file: diff_file.map(|x| format!("{}", x.as_ref().display())),
+        }).exit_on_error()
+    }
+}
+
 /// Canvas for chunk image merging.
 pub struct Canvas {
     pub buf: Vec<u8>,
