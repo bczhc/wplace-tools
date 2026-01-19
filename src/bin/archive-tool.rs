@@ -360,19 +360,22 @@ fn do_diff_for_tar(base: PathBuf, new: PathBuf, output: PathBuf) -> anyhow::Resu
 mod apply {
     use crate::cli::ApplyCmd;
     use log::{info, warn};
+    use once_cell::sync::Lazy;
     use rayon::iter::{ParallelBridge, ParallelIterator};
+    use std::collections::HashSet;
     use std::fs::File;
     use std::io;
     use std::io::{Cursor, Write};
     use std::path::Path;
     use std::process::exit;
+    use std::sync::Mutex;
     use wplace_tools::diff::{DiffFile, IndexEntry};
     use wplace_tools::indexed_png::{read_png_reader, write_chunk_png};
     use wplace_tools::{
         apply_chunk, chunk_buf, diff, new_chunk_file, open_file_range,
-        stylized_progress_bar, validate_chunk_checksum, zstd_decompress, AnyhowErrorExt, ChunkFetcher, ChunkNumber,
-        ChunkProcessError, DirChunkFetcher, ExitOnError, TarChunkFetcher,
-        CHUNK_NUMBER_TOTAL,
+        stylized_progress_bar, validate_chunk_checksum, zstd_compress_to, zstd_decompress, AnyhowErrorExt, ChunkFetcher,
+        ChunkNumber, ChunkProcessError, DirChunkFetcher, ExitOnError,
+        TarChunkFetcher, CHUNK_NUMBER_TOTAL,
     };
     use yeet_ops::yeet;
 
@@ -386,6 +389,7 @@ mod apply {
     }
 
     type DynFetcher = dyn ChunkFetcher + Send + Sync + 'static;
+    static LAST_INDEX: Lazy<Mutex<HashSet<ChunkNumber>>> = Lazy::new(|| Mutex::new(HashSet::new()));
 
     fn apply_1st_diff(
         memory: Option<&mut [Option<Vec<u8>>]>,
@@ -406,6 +410,8 @@ mod apply {
             .iter()
             .filter(|x| !x.1.is_changed())
             .collect::<Vec<_>>();
+
+        *LAST_INDEX.lock().unwrap() = index.iter().map(|x| *x.0).collect();
 
         let memory_ptr = memory.map(|x| x.as_mut_ptr() as usize);
 
@@ -506,13 +512,14 @@ mod apply {
 
         let memory_ptr = memory.as_mut_ptr() as usize;
 
+        let get_cell = |n: ChunkNumber| unsafe {
+            let ptr = memory_ptr as *mut Option<Vec<u8>>;
+            &mut *ptr.add(array_index(n))
+        };
         let decompress_to = |n: ChunkNumber, to: &mut [u8]| {
             // SAFETY: Rayon ensures unique access to each entry during iteration,
             // and we are accessing index 'idx' which is unique to ChunkNumber 'n'
-            let cell_ptr = unsafe {
-                let ptr = memory_ptr as *mut Option<Vec<u8>>;
-                &mut *ptr.add(array_index(n))
-            };
+            let cell_ptr = get_cell(n);
 
             // Decompress existing base
             if let Some(compressed_base) = cell_ptr.as_ref() {
@@ -522,6 +529,36 @@ mod apply {
             }
             cell_ptr
         };
+
+        let delete_chunk_count: usize = {
+            let mut last_index = LAST_INDEX.lock().unwrap();
+            let set = index.iter().map(|x| *x.0).collect::<HashSet<_>>();
+            let deleted_chunks = last_index.difference(&set);
+
+            // Please see [comment 1] in retrieve.rs.
+            let mut deleted_counter = 0_usize;
+            for &n in deleted_chunks {
+                let cell_ptr = get_cell(n);
+                if let Some(x) = cell_ptr {
+                    x.clear();
+                    zstd_compress_to(x, ZSTD_LEVEL, &chunk_buf!())?;
+                }
+                deleted_counter += 1;
+            }
+
+            // update the last index
+            last_index.clear();
+            for n in set {
+                last_index.insert(n);
+            }
+
+            deleted_counter
+        };
+        info!(
+            "(deleted: {}, changed + added: {})",
+            delete_chunk_count,
+            changed_entries.len()
+        );
 
         let pb = stylized_progress_bar(changed_entries.len() as u64);
         changed_entries.into_iter().par_bridge().for_each_with(
@@ -542,9 +579,7 @@ mod apply {
                     // Recompress and update memory
                     if let Some(buf) = &mut *cell_ptr {
                         buf.clear();
-                        let mut encoder = zstd::Encoder::new(buf, ZSTD_LEVEL)?;
-                        encoder.write_all(base_buf)?;
-                        encoder.finish()?;
+                        zstd_compress_to(buf, ZSTD_LEVEL, base_buf)?;
                     } else {
                         let re_compressed = zstd::encode_all(&base_buf[..], ZSTD_LEVEL)?;
                         *cell_ptr = Some(re_compressed);

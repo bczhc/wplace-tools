@@ -26,7 +26,7 @@ use std::env::set_var;
 use std::ffi::OsStr;
 use std::fmt::{Display, Formatter};
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom, Take};
+use std::io::{BufReader, Read, Seek, SeekFrom, Take, Write};
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::sync::Arc;
@@ -257,6 +257,14 @@ pub fn reader_range<R: Read + Seek>(mut reader: R, pos: u64, len: u64) -> io::Re
 #[inline(always)]
 pub fn zstd_decompress(reader: impl Read, buf: &mut [u8]) -> io::Result<()> {
     zstd::Decoder::new(reader)?.read_exact(buf)
+}
+
+#[inline(always)]
+pub fn zstd_compress_to(writer: impl Write, level: i32, buf: &[u8]) -> io::Result<()> {
+    let mut encoder = zstd::Encoder::new(writer, level)?;
+    encoder.write_all(buf)?;
+    encoder.finish()?;
+    Ok(())
 }
 
 #[inline(always)]

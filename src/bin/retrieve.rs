@@ -132,6 +132,12 @@ fn main() -> anyhow::Result<()> {
                     None => {
                         // chunk had not been created in this snapshot
                         info!("Chunk not present in this snapshot '{}', skipping...", name);
+                        // [comment 1]
+                        // When a chunk is not present or being deleted, the chunk buffer needs to
+                        // be reset. Say, one chunk gets deleted here, however the next diff file
+                        // adds this chunk back again; it requires an all-zero buffer to perform its
+                        // applying, or the outdated data will cause a checksum mismatch.
+                        chunk_buf.fill(0);
                         return;
                     }
                     Some(e) => e,
@@ -153,7 +159,7 @@ fn main() -> anyhow::Result<()> {
                     image_saver.submit(img_path, CHUNK_DIMENSION, chunk_buf.clone());
                 }
             };
-            result.exit_with_chunk_context(*n, Some(format!("Datetime name: {}", name)));
+            result.exit_with_chunk_context(*n, Some(format!("Diff iso8601 name: {}", name)));
         });
         // save the stitched image
         if let Some(mut c) = stitch_canvas {
