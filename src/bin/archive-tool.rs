@@ -5,31 +5,25 @@
 #![feature(try_blocks)]
 #![warn(clippy::all, clippy::nursery)]
 
-use crate::cli::{ApplyCmd, Commands};
+use crate::cli::Commands;
 use clap::Parser;
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::exit;
 use std::sync::mpsc::sync_channel;
 use std::thread::spawn;
-use std::{fs, hint, io};
+use std::{fs, io};
 use tempfile::NamedTempFile;
 use wplace_tools::checksum::chunk_checksum;
-use wplace_tools::diff::{DiffFile, IndexEntry};
-use wplace_tools::indexed_png::{read_png, read_png_reader, write_chunk_png};
+use wplace_tools::indexed_png::read_png;
 use wplace_tools::{
-    apply_chunk, chunk_buf, collect_chunks, diff, new_chunk_file,
-    open_file_range, set_up_logger, stylized_progress_bar, validate_chunk_checksum,
-    zstd_decompress, ChunkFetcher, ChunkNumber, ChunkProcessError, DirChunkFetcher, ExitOnError,
-    TarChunkFetcher, CHUNK_LENGTH, CHUNK_NUMBER_TOTAL, DIFF_DATA_ZSTD_COMPRESSION_LEVEL, MUTATION_MASK,
-    PALETTE_INDEX_MASK,
+    CHUNK_LENGTH, ChunkFetcher, DIFF_DATA_ZSTD_COMPRESSION_LEVEL, DirChunkFetcher, ExitOnError,
+    MUTATION_MASK, PALETTE_INDEX_MASK, TarChunkFetcher, chunk_buf, collect_chunks, diff,
+    new_chunk_file, open_file_range, set_up_logger, stylized_progress_bar,
 };
-use yeet_ops::yeet;
 
 mod cli {
     use clap::{Args, Parser, Subcommand, ValueHint};
@@ -317,12 +311,12 @@ fn do_diff(
                         base_buf.fill(0);
                     }
 
-                    let checksum = chunk_checksum(&new_buf);
+                    let checksum = chunk_checksum(new_buf);
 
                     // It's expecting that a large percent of the chunks are not mutated.
                     // Thus in this case, only computing diff for changed chunks can reduce the process time.
                     let compressed_diff = if !base_chunk_present || base_buf != new_buf {
-                        let compressed_diff = diff_chunk_compressed(base_buf, &new_buf).unwrap();
+                        let compressed_diff = diff_chunk_compressed(base_buf, new_buf).unwrap();
                         Some(compressed_diff)
                     } else {
                         None
@@ -365,20 +359,19 @@ fn do_diff_for_tar(base: PathBuf, new: PathBuf, output: PathBuf) -> anyhow::Resu
 
 mod apply {
     use crate::cli::ApplyCmd;
-    use log::{error, info, warn};
+    use log::{info, warn};
     use rayon::iter::{ParallelBridge, ParallelIterator};
     use std::fs::File;
     use std::io;
     use std::io::{Cursor, Write};
-    use std::ops::Add;
     use std::path::Path;
     use std::process::exit;
     use wplace_tools::diff::{DiffFile, IndexEntry};
     use wplace_tools::indexed_png::{read_png_reader, write_chunk_png};
     use wplace_tools::{
-        apply_chunk, chunk_buf, diff, new_chunk_file, open_file_range,
-        stylized_progress_bar, validate_chunk_checksum, zstd_decompress, ChunkFetcher, ChunkNumber, ChunkProcessError,
-        DirChunkFetcher, ExitOnError, TarChunkFetcher, CHUNK_NUMBER_TOTAL,
+        CHUNK_NUMBER_TOTAL, ChunkFetcher, ChunkNumber, ChunkProcessError, DirChunkFetcher,
+        ExitOnError, TarChunkFetcher, apply_chunk, chunk_buf, diff, new_chunk_file,
+        open_file_range, stylized_progress_bar, validate_chunk_checksum, zstd_decompress,
     };
     use yeet_ops::yeet;
 
@@ -387,7 +380,7 @@ mod apply {
 
     #[inline(always)]
     /// A simple transform from ChunkNumber(u16, u16) to the usize array index.
-    fn array_index(n: ChunkNumber) -> usize {
+    const fn array_index(n: ChunkNumber) -> usize {
         (n.0 as usize * CHUNK_NUMBER_TOTAL) + n.1 as usize
     }
 
@@ -402,7 +395,7 @@ mod apply {
     ) -> anyhow::Result<()> {
         let diff = diff.as_ref();
 
-        let mut diff_file = diff::DiffFile::open(File::open_buffered(&diff)?)?;
+        let mut diff_file = diff::DiffFile::open(File::open_buffered(diff)?)?;
         let index = diff_file.collect_index()?;
         let changed_chunks = index
             .iter()
@@ -427,7 +420,7 @@ mod apply {
                     let &n = x.0;
                     let entry = x.1;
 
-                    let diff_reader = open_file_range(&diff, entry.pos, entry.len)?;
+                    let diff_reader = open_file_range(diff, entry.pos, entry.len)?;
                     zstd_decompress(diff_reader, raw_diff)?;
 
                     // if the base chunk is not present, the buffer will be just zeros
@@ -444,7 +437,7 @@ mod apply {
                     );
 
                     if !no_checksum {
-                        validate_chunk_checksum(&base_buf, entry.checksum)?;
+                        validate_chunk_checksum(base_buf, entry.checksum)?;
                     }
                     if let Some(p) = memory_ptr {
                         let cell_ptr = cell_ptr!(n, p);
@@ -479,7 +472,7 @@ mod apply {
 
                     if !no_checksum {
                         read_png_reader(Cursor::new(&png_raw), buf)?;
-                        validate_chunk_checksum(&buf, entry.checksum).exit_on_error();
+                        validate_chunk_checksum(buf, entry.checksum).exit_on_error();
                     }
                     if let Some(p) = memory_ptr {
                         let cell_ptr = cell_ptr!(n, p);
@@ -487,11 +480,7 @@ mod apply {
                     }
                     if let Some(output) = output {
                         let chunk_png = new_chunk_file(output, n, "png");
-                        io::copy(
-                            &mut (&png_raw[..]),
-                            &mut File::create_buffered(chunk_png)?,
-                        )
-                            ?;
+                        io::copy(&mut (&png_raw[..]), &mut File::create_buffered(chunk_png)?)?;
                     }
 
                     pb.inc(1);
@@ -559,7 +548,7 @@ mod apply {
                     if let Some(buf) = &mut *cell_ptr {
                         buf.clear();
                         let mut encoder = zstd::Encoder::new(buf, ZSTD_LEVEL)?;
-                        encoder.write_all(&base_buf)?;
+                        encoder.write_all(base_buf)?;
                         encoder.finish()?;
                     } else {
                         let re_compressed = zstd::encode_all(&base_buf[..], ZSTD_LEVEL)?;
@@ -612,7 +601,7 @@ mod apply {
             } else {
                 yeet!(anyhow::anyhow!("Unknown 'base' file type"))
             };
-        assert!(args.diffs.len() >= 1, "Clap ensures");
+        assert!(!args.diffs.is_empty(), "Clap ensures");
 
         let diff_total = args.diffs.len();
         let print_log = |i: usize, path: &Path| {
@@ -631,7 +620,7 @@ mod apply {
                 None,
                 &*base_fetcher,
                 &args.diffs[0],
-                args.output.as_ref().map(|x| x.as_path()),
+                args.output.as_deref(),
                 args.no_checksum,
             )?;
             return Ok(());
@@ -661,7 +650,7 @@ mod apply {
         apply_non_1st_diff(
             &mut memory_store,
             last,
-            args.output.as_ref().map(|x| x.as_path()),
+            args.output.as_deref(),
             args.no_checksum,
         )?;
 

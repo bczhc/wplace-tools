@@ -108,7 +108,7 @@ impl PixelMapper {
     /// This is significantly faster than the previous implementation which
     /// performed bit-shifting and large memory lookups per pixel.
     #[inline(always)]
-    pub fn map(&self, index: u8) -> u8 {
+    pub const fn map(&self, index: u8) -> u8 {
         self.fast_map[index as usize]
     }
 }

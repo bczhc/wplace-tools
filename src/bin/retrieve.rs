@@ -13,12 +13,16 @@ use log::{debug, info, warn};
 use rayon::prelude::*;
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
-use std::sync::mpmc::{sync_channel, Receiver, Sender};
-use std::thread::{spawn, JoinHandle};
+use std::sync::mpmc::{Receiver, Sender, sync_channel};
+use std::thread::{JoinHandle, spawn};
 use std::{fs, hint};
 use wplace_tools::indexed_png::{read_png_reader, write_png};
 use wplace_tools::tar::ChunksTarReader;
-use wplace_tools::{apply_chunk, diff, quick_capture, set_up_logger, stylized_progress_bar, validate_chunk_checksum, zstd_decompress, Canvas, ChunkNumber, ChunkProcessError, DiffFilesCollector, DirDiffFilesCollector, ExitOnError, SqfsDiffFilesCollector, CHUNK_DIMENSION, CHUNK_LENGTH};
+use wplace_tools::{
+    CHUNK_DIMENSION, CHUNK_LENGTH, Canvas, ChunkNumber, ChunkProcessError, DiffFilesCollector,
+    DirDiffFilesCollector, ExitOnError, SqfsDiffFilesCollector, apply_chunk, diff, quick_capture,
+    set_up_logger, stylized_progress_bar, validate_chunk_checksum, zstd_decompress,
+};
 use yeet_ops::yeet;
 
 #[derive(clap::Parser)]
@@ -149,10 +153,8 @@ fn main() -> anyhow::Result<()> {
                 }
 
                 let img_path = chunk_out.join(format!("{name}.png"));
-                if args.all || is_last_snapshot {
-                    if !args.only_stitched {
-                        image_saver.submit(img_path, CHUNK_DIMENSION, chunk_buf.clone());
-                    }
+                if (args.all || is_last_snapshot) && !args.only_stitched {
+                    image_saver.submit(img_path, CHUNK_DIMENSION, chunk_buf.clone());
                 }
             };
             result
@@ -272,7 +274,7 @@ impl ImageSaver {
             let path = path.as_ref();
             fs::create_dir_all(path.parent().expect("Can't get parent path"))
                 .expect("Can't create folder");
-            write_png(&path, dimension, &buf).exit_on_error();
+            write_png(path, dimension, &buf).exit_on_error();
             debug!("Saved: {}", path.display());
         };
         self.task_tx.send(Box::new(task)).unwrap();
