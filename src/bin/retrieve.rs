@@ -4,6 +4,7 @@
 #![feature(decl_macro)]
 #![feature(likely_unlikely)]
 #![feature(mpmc_channel)]
+#![feature(try_blocks_heterogeneous)]
 #![warn(clippy::all, clippy::nursery)]
 
 use anyhow::anyhow;
@@ -121,7 +122,7 @@ fn main() -> anyhow::Result<()> {
         // parallelize if multiple chunks are requested
         chunks_buf.par_iter_mut().for_each(|(n, chunk_buf)| {
             pb.inc(1);
-            let result: anyhow::Result<()> = try {
+            let result: anyhow::Result<()> = try bikeshed _ {
                 let chunk_out = args.out.join(format!("{}-{}", n.0, n.1));
 
                 let mut diff_data = vec![0_u8; CHUNK_LENGTH];

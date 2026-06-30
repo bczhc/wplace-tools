@@ -3,6 +3,7 @@
 #![feature(likely_unlikely)]
 #![feature(yeet_expr)]
 #![feature(try_blocks)]
+#![feature(try_blocks_heterogeneous)]
 #![warn(clippy::all, clippy::nursery)]
 
 use crate::cli::Commands;
@@ -254,7 +255,7 @@ fn main() -> anyhow::Result<()> {
             assert_eq!(reader.entry_count as usize, index.len());
             let pb = stylized_progress_bar(index.len() as u64);
             index.into_par_iter().for_each(|(_n, e)| {
-                let result: anyhow::Result<()> = try {
+                let result: anyhow::Result<()> = try bikeshed _ {
                     match e.is_changed() {
                         false => {}
                         true => {
@@ -423,7 +424,7 @@ mod apply {
         changed_chunks.into_iter().par_bridge().for_each_with(
             (chunk_buf!(), chunk_buf!()),
             |(raw_diff, base_buf), x| {
-                let result: anyhow::Result<()> = try {
+                let result: anyhow::Result<()> = try bikeshed _ {
                     let &n = x.0;
                     let entry = x.1;
 
@@ -468,7 +469,7 @@ mod apply {
         unchanged_chunks.into_iter().par_bridge().for_each_with(
             chunk_buf!(),
             |buf, (&n, entry)| {
-                let result: anyhow::Result<()> = try {
+                let result: anyhow::Result<()> = try bikeshed _ {
                     let png_raw = base_fetcher.fetch_raw(n)?;
 
                     if !no_checksum {
@@ -564,7 +565,7 @@ mod apply {
         changed_entries.into_iter().par_bridge().for_each_with(
             (chunk_buf!(), chunk_buf!()),
             |(base_buf, diff_data_buf), (n, entry)| {
-                let result: anyhow::Result<()> = try {
+                let result: anyhow::Result<()> = try bikeshed _ {
                     let cell_ptr = decompress_to(n, base_buf);
 
                     // Load and apply diff
